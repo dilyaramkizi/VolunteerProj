@@ -1,0 +1,7 @@
+name = "projmanage-api"
+main = "src/worker.js"
+compatibility_date = "2026-04-02"
+
+[vars]
+SUPABASE_STORAGE_BUCKET = "ngo-assets"
+CORS_ORIGIN = "*"

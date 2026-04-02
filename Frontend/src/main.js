@@ -1,6 +1,6 @@
 import "./style.css";
 
-const API_BASE = "http://localhost:4000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 const SHIFT_OPTIONS = ["Morning", "Afternoon", "Night"];
 
 const app = document.querySelector("#app");
@@ -248,7 +248,7 @@ function renderShell(user) {
           <div class="mt-auto pt-8">
             <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div class="flex items-center gap-3">
-                <img src="${API_BASE}${user.photoUrl}" alt="${escapeHtml(user.name)}" class="h-12 w-12 rounded-full object-cover" />
+                <img src="${resolveAssetUrl(user.photoUrl)}" alt="${escapeHtml(user.name)}" class="h-12 w-12 rounded-full object-cover" />
                 <div>
                   <p class="text-sm font-semibold text-slate-900">${escapeHtml(user.name)}</p>
                   <p class="text-xs text-slate-500">${user.region}</p>
@@ -372,7 +372,7 @@ async function renderParticipantEvents(user, content) {
                     const existingJoin = joinByEventId.get(event.id);
                     return `
                     <article class="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <img src="${API_BASE}${event.photoUrl}" alt="${escapeHtml(event.name)}" class="mb-3 h-40 w-full rounded-lg object-cover" />
+                      <img src="${resolveAssetUrl(event.photoUrl)}" alt="${escapeHtml(event.name)}" class="mb-3 h-40 w-full rounded-lg object-cover" />
                       <h4 class="text-lg font-semibold text-slate-900">${escapeHtml(event.name)}</h4>
                       <p class="mt-1 text-sm text-slate-600">${escapeHtml(event.description)}</p>
                       <p class="mt-2 text-sm text-slate-500">Region: ${event.region} · ${escapeHtml(event.coordinatorName)}</p>
@@ -497,7 +497,7 @@ async function renderCoordinatorEvents(user, content) {
                   .map(
                     (event) => `
                     <article class="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <img src="${API_BASE}${event.photoUrl}" alt="${escapeHtml(event.name)}" class="mb-3 h-36 w-full rounded-lg object-cover" />
+                      <img src="${resolveAssetUrl(event.photoUrl)}" alt="${escapeHtml(event.name)}" class="mb-3 h-36 w-full rounded-lg object-cover" />
                       <form class="event-settings-form grid gap-2" data-event-id="${event.id}">
                         <input type="text" name="name" value="${escapeHtmlAttr(event.name)}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
                         <textarea name="description" rows="2" class="rounded-lg border border-slate-300 px-3 py-2 text-sm" required>${escapeHtml(event.description)}</textarea>
@@ -700,7 +700,7 @@ async function loadQuickUsersForLogin(form) {
             data-birth-date="${escapeHtmlAttr(user.birthDate)}"
             data-role="${escapeHtmlAttr(user.role)}">
             <span class="flex items-center gap-3">
-              <img src="${API_BASE}${user.photoUrl}" alt="${escapeHtml(user.name)}" class="h-9 w-9 rounded-full object-cover" />
+              <img src="${resolveAssetUrl(user.photoUrl)}" alt="${escapeHtml(user.name)}" class="h-9 w-9 rounded-full object-cover" />
               <span>
                 <span class="block text-sm font-semibold text-slate-900">${escapeHtml(user.name)}</span>
                 <span class="block text-xs text-slate-500">${user.role} · ${user.region}</span>
@@ -801,4 +801,11 @@ function escapeHtml(value) {
 
 function escapeHtmlAttr(value) {
   return escapeHtml(value);
+}
+
+function resolveAssetUrl(photoUrl) {
+  const value = String(photoUrl || "");
+  if (!value) return "";
+  if (value.startsWith("http://") || value.startsWith("https://")) return value;
+  return `${API_BASE}${value}`;
 }
