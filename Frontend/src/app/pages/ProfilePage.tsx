@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Clock, Trophy, MapPin, Award, BookOpen, Star, CalendarDays, Edit3, CheckCircle2, UserSquare2 } from 'lucide-react';
+import { Clock, Trophy, MapPin, Award, BookOpen, Star, CalendarDays, Edit3, CheckCircle2, UserSquare2, HeartHandshake } from 'lucide-react';
 
 export default function ProfilePage() {
   return (

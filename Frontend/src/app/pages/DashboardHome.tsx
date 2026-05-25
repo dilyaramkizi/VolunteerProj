@@ -9,7 +9,8 @@ import {
   Heart,
   ChevronRight,
   Award,
-  ArrowUpRight
+  ArrowUpRight,
+  User
 } from 'lucide-react';
 
 export default function DashboardHome() {
@@ -118,7 +119,7 @@ export default function DashboardHome() {
                         <span className="font-semibold text-sm truncate">{upcomingShifts[0].location}</span>
                       </div>
                       <div className="flex items-center gap-3 text-slate-600 sm:col-span-2">
-                        <UserSquare2 size={18} className="text-slate-400" />
+                        <User size={18} className="text-slate-400" />
                         <span className="font-semibold text-sm">Role: {upcomingShifts[0].role}</span>
                       </div>
                     </div>
