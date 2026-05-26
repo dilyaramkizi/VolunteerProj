@@ -1,25 +1,107 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Link, useNavigate } from 'react-router';
-import { HeartHandshake, Mail, Lock, User, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { HeartHandshake, Mail, Lock, User, ArrowRight, CheckCircle2, MapPin, Calendar, Camera } from 'lucide-react';
+
+const API_BASE =
+  (import.meta as any).env?.VITE_API_BASE ??
+  (window.location.hostname === 'localhost' ? 'http://localhost:4000' : '');
+
+// Регионы из server.js
+const REGIONS = ['Almaty', 'Astana'];
 
 export default function RegisterPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  const [role, setRole] = useState<'volunteer' | 'ngo' | null>(null);
+  const [role, setRole] = useState<'Participant' | 'Coordinator' | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  
+  // Form state
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [region, setRegion] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleRoleSelect = (selectedRole: 'Participant' | 'Coordinator') => {
+    setRole(selectedRole);
+  };
+
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setPhoto(file);
+      const previewUrl = URL.createObjectURL(file);
+      setPhotoPreview(previewUrl);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
     if (step === 1 && role) {
       setStep(2);
-    } else if (step === 2) {
-      setIsLoading(true);
-      setTimeout(() => {
-        setIsLoading(false);
-        navigate('/dashboard');
-      }, 1000);
+      return;
     }
+    
+    if (step === 2) {
+      setIsLoading(true);
+      setError('');
+      
+      try {
+        // Validate all fields
+        if (!name || !email || !password || !region || !birthDate || !photo) {
+          throw new Error('All fields are required');
+        }
+        
+        if (password.length < 8) {
+          throw new Error('Password must be at least 8 characters');
+        }
+        
+        // Create FormData
+        const formData = new FormData();
+        formData.append('name', name);
+        formData.append('email', email);
+        formData.append('password', password);
+        formData.append('region', region);
+        formData.append('birthDate', birthDate);
+        formData.append('role', role);
+        // Use a conditional to check if photo exists
+        if (photo) {
+          formData.append('photo', photo);
+        }
+        
+        // Send registration to backend
+        const response = await fetch(`${API_BASE}/api/register`, {
+          method: 'POST',
+          body: formData,
+        });
+        
+        const result = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(result.message || 'Registration failed');
+        }
+        
+        // Registration successful - redirect to login
+        setTimeout(() => {
+          navigate('/login');
+        }, 1500);
+        
+      } catch (err: any) {
+        setError(err.message || 'Registration failed. Please try again.');
+        setIsLoading(false);
+      }
+    }
+  };
+
+  // Reset error when changing steps
+  const goBack = () => {
+    setStep(1);
+    setError('');
   };
 
   return (
@@ -40,8 +122,8 @@ export default function RegisterPage() {
         >
           {/* Stepper */}
           <div className="flex items-center gap-2 mb-10">
-            <div className={`h-1.5 flex-1 rounded-full ${step >= 1 ? 'bg-orange-600' : 'bg-slate-200'}`} />
-            <div className={`h-1.5 flex-1 rounded-full ${step >= 2 ? 'bg-orange-600' : 'bg-slate-200'}`} />
+            <div className={`h-1.5 flex-1 rounded-full transition-all ${step >= 1 ? 'bg-orange-600' : 'bg-slate-200'}`} />
+            <div className={`h-1.5 flex-1 rounded-full transition-all ${step >= 2 ? 'bg-orange-600' : 'bg-slate-200'}`} />
           </div>
 
           {step === 1 ? (
@@ -51,44 +133,46 @@ export default function RegisterPage() {
 
               <div className="space-y-4">
                 <button
-                  onClick={() => setRole('volunteer')}
+                  type="button"
+                  onClick={() => handleRoleSelect('Participant')}
                   className={`w-full p-6 border-2 rounded-2xl text-left transition-all duration-200 flex gap-4 ${
-                    role === 'volunteer' 
+                    role === 'Participant' 
                       ? 'border-orange-600 bg-orange-50 shadow-md scale-[1.02]' 
                       : 'border-slate-200 bg-white hover:border-orange-300 hover:bg-slate-50'
                   }`}
                 >
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ${
-                    role === 'volunteer' ? 'bg-orange-600 text-white' : 'bg-slate-100 text-slate-400'
+                    role === 'Participant' ? 'bg-orange-600 text-white' : 'bg-slate-100 text-slate-400'
                   }`}>
                     <User size={24} />
                   </div>
                   <div>
                     <h3 className="text-lg font-extrabold text-slate-900 mb-1 flex items-center gap-2">
                       I'm a Volunteer
-                      {role === 'volunteer' && <CheckCircle2 size={18} className="text-orange-600" />}
+                      {role === 'Participant' && <CheckCircle2 size={18} className="text-orange-600" />}
                     </h3>
                     <p className="text-sm font-medium text-slate-500">I want to find opportunities, join events, and track my hours.</p>
                   </div>
                 </button>
 
                 <button
-                  onClick={() => setRole('ngo')}
+                  type="button"
+                  onClick={() => handleRoleSelect('Coordinator')}
                   className={`w-full p-6 border-2 rounded-2xl text-left transition-all duration-200 flex gap-4 ${
-                    role === 'ngo' 
+                    role === 'Coordinator' 
                       ? 'border-emerald-600 bg-emerald-50 shadow-md scale-[1.02]' 
                       : 'border-slate-200 bg-white hover:border-emerald-300 hover:bg-slate-50'
                   }`}
                 >
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ${
-                    role === 'ngo' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400'
+                    role === 'Coordinator' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400'
                   }`}>
                     <HeartHandshake size={24} />
                   </div>
                   <div>
                     <h3 className="text-lg font-extrabold text-slate-900 mb-1 flex items-center gap-2">
                       I'm an NGO Coordinator
-                      {role === 'ngo' && <CheckCircle2 size={18} className="text-emerald-600" />}
+                      {role === 'Coordinator' && <CheckCircle2 size={18} className="text-emerald-600" />}
                     </h3>
                     <p className="text-sm font-medium text-slate-500">I want to post shifts, manage volunteers, and track our impact.</p>
                   </div>
@@ -107,17 +191,25 @@ export default function RegisterPage() {
           ) : (
             <>
               <button 
-                onClick={() => setStep(1)} 
+                type="button"
+                onClick={goBack} 
                 className="text-sm font-bold text-slate-500 hover:text-slate-900 mb-6 flex items-center gap-1 transition-colors"
               >
                 <ArrowRight size={16} className="rotate-180" /> Back
               </button>
               <h1 className="text-4xl font-extrabold text-slate-900 mb-2 tracking-tight">Create account</h1>
-              <p className="text-slate-500 font-medium mb-10 text-lg">Enter your details to get started.</p>
+              <p className="text-slate-500 font-medium mb-6 text-lg">Enter your details to get started.</p>
 
-              <form onSubmit={handleSubmit} className="space-y-5">
+              {/* Error message */}
+              {error && (
+                <div className="mb-4 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm font-medium text-red-600">
+                  {error}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 ml-1">Full Name</label>
+                  <label className="text-sm font-bold text-slate-700 ml-1">Full Name *</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
                       <User size={18} />
@@ -125,14 +217,16 @@ export default function RegisterPage() {
                     <input 
                       type="text" 
                       required
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
                       placeholder="e.g. Aruzhan K."
-                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm font-medium placeholder:font-normal placeholder:text-slate-400"
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 ml-1">Email Address</label>
+                  <label className="text-sm font-bold text-slate-700 ml-1">Email Address *</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
                       <Mail size={18} />
@@ -140,14 +234,16 @@ export default function RegisterPage() {
                     <input 
                       type="email" 
                       required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       placeholder="name@example.com"
-                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm font-medium placeholder:font-normal placeholder:text-slate-400"
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 ml-1">Password</label>
+                  <label className="text-sm font-bold text-slate-700 ml-1">Password * (min. 8 characters)</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
                       <Lock size={18} />
@@ -155,16 +251,75 @@ export default function RegisterPage() {
                     <input 
                       type="password" 
                       required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm font-medium placeholder:font-normal placeholder:text-slate-400"
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm"
                     />
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700 ml-1">Region *</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                      <MapPin size={18} />
+                    </div>
+                    <select
+                      required
+                      value={region}
+                      onChange={(e) => setRegion(e.target.value)}
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm appearance-none cursor-pointer"
+                    >
+                      <option value="">Select region</option>
+                      {REGIONS.map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700 ml-1">Date of Birth *</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                      <Calendar size={18} />
+                    </div>
+                    <input 
+                      type="date" 
+                      required
+                      value={birthDate}
+                      onChange={(e) => setBirthDate(e.target.value)}
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700 ml-1">Profile Photo *</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                      <Camera size={18} />
+                    </div>
+                    <input 
+                      type="file" 
+                      required
+                      accept="image/*"
+                      onChange={handlePhotoChange}
+                      className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100 cursor-pointer"
+                    />
+                  </div>
+                  {photoPreview && (
+                    <div className="mt-2">
+                      <img src={photoPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border-2 border-orange-200" />
+                    </div>
+                  )}
                 </div>
 
                 <button 
                   type="submit" 
                   disabled={isLoading}
-                  className="w-full flex items-center justify-center gap-2 py-4 bg-orange-600 text-white rounded-xl font-bold text-lg hover:bg-orange-700 focus:ring-4 focus:ring-orange-200 transition-all shadow-md mt-4 disabled:opacity-70 disabled:cursor-not-allowed group"
+                  className="w-full flex items-center justify-center gap-2 py-4 bg-orange-600 text-white rounded-xl font-bold text-lg hover:bg-orange-700 focus:ring-4 focus:ring-orange-200 transition-all shadow-md mt-6 disabled:opacity-70 disabled:cursor-not-allowed group"
                 >
                   {isLoading ? (
                     <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -176,6 +331,12 @@ export default function RegisterPage() {
                   )}
                 </button>
               </form>
+              
+              {isLoading && (
+                <p className="mt-4 text-center text-sm text-slate-500">
+                  Creating your account...
+                </p>
+              )}
             </>
           )}
 

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Outlet, Link, useLocation } from 'react-router';
+import React, { useState, useEffect } from 'react';
+import { Outlet, Link, useLocation, useNavigate } from 'react-router';
 import { motion } from 'motion/react';
 import { 
   HeartHandshake, 
@@ -12,19 +12,86 @@ import {
   LogOut,
   Menu,
   X,
-  Briefcase
+  Briefcase,
+  Users,
+  PlusCircle
 } from 'lucide-react';
+
+const API_BASE =
+  (import.meta as any).env?.VITE_API_BASE ??
+  (window.location.hostname === 'localhost' ? 'http://localhost:4000' : '');
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'Participant' | 'Coordinator';
+  region: string;
+  photoUrl?: string;
+}
 
 export default function DashboardLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
   const location = useLocation();
+  const navigate = useNavigate();
 
-  const navigation = [
-    { name: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard size={20} /> },
-    { name: 'Opportunities', href: '/dashboard/opportunities', icon: <Briefcase size={20} /> },
-    { name: 'My Schedule', href: '/dashboard/schedule', icon: <Calendar size={20} /> },
-    { name: 'Profile', href: '/dashboard/profile', icon: <UserCircle size={20} /> },
-  ];
+  useEffect(() => {
+    const storedUser = localStorage.getItem('ngo_current_user');
+    if (!storedUser) {
+      navigate('/login');
+      return;
+    }
+    setUser(JSON.parse(storedUser));
+  }, [navigate]);
+
+  // Navigation based on user role
+  const getNavigation = () => {
+    const baseNav = [
+      { name: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard size={20} /> },
+    ];
+    
+    if (user?.role === 'Participant') {
+      return [
+        ...baseNav,
+        { name: 'Opportunities', href: '/dashboard/opportunities', icon: <Briefcase size={20} /> },
+        { name: 'My Schedule', href: '/dashboard/schedule', icon: <Calendar size={20} /> },
+        { name: 'Profile', href: '/dashboard/profile', icon: <UserCircle size={20} /> },
+      ];
+    } else if (user?.role === 'Coordinator') {
+      return [
+        ...baseNav,
+        { name: 'My Events', href: '/dashboard/events', icon: <Calendar size={20} /> },
+        { name: 'Create Event', href: '/dashboard/create-event', icon: <PlusCircle size={20} /> },
+        { name: 'Participants', href: '/dashboard/participants', icon: <Users size={20} /> },
+        { name: 'Groups', href: '/dashboard/groups', icon: <Users size={20} /> },
+        { name: 'Profile', href: '/dashboard/profile', icon: <UserCircle size={20} /> },
+      ];
+    }
+    
+    return [...baseNav, { name: 'Profile', href: '/dashboard/profile', icon: <UserCircle size={20} /> }];
+  };
+
+  const navigation = getNavigation();
+
+  const handleLogout = () => {
+    localStorage.removeItem('ngo_current_user');
+    window.dispatchEvent(new CustomEvent('userChanged', { detail: null }));
+    navigate('/login');
+  };
+
+  const getAvatarUrl = () => {
+    if (user?.photoUrl) return `${API_BASE}${user.photoUrl}`;
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'User')}&background=f97316&color=fff&bold=true`;
+  };
+
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="w-12 h-12 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex">
@@ -42,7 +109,7 @@ export default function DashboardLayout() {
         <nav className="flex-1 px-4 py-8 space-y-2">
           <p className="px-4 text-xs font-extrabold text-slate-400 uppercase tracking-widest mb-4">Main Menu</p>
           {navigation.map((item) => {
-            const isActive = location.pathname === item.href || (location.pathname.startsWith(item.href) && item.href !== '/dashboard');
+            const isActive = location.pathname === item.href;
             return (
               <Link 
                 key={item.name} 
@@ -63,14 +130,13 @@ export default function DashboardLayout() {
         </nav>
 
         <div className="p-4 border-t border-slate-100">
-          <Link to="/dashboard/settings" className="flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all duration-200">
-            <Settings size={20} className="text-slate-400" />
-            Settings
-          </Link>
-          <Link to="/login" className="flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-rose-600 hover:bg-rose-50 transition-all duration-200">
+          <button 
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-rose-600 hover:bg-rose-50 transition-all duration-200"
+          >
             <LogOut size={20} className="text-rose-400" />
             Log Out
-          </Link>
+          </button>
         </div>
       </aside>
 
@@ -93,32 +159,21 @@ export default function DashboardLayout() {
             </Link>
           </div>
 
-          {/* Search Bar - hidden on mobile */}
-          <div className="hidden lg:flex relative w-96">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
-              <Search size={18} />
-            </div>
-            <input 
-              type="text" 
-              placeholder="Search events, NGOs, or skills..." 
-              className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-full text-sm font-medium focus:ring-4 focus:ring-orange-50 focus:border-orange-300 outline-none transition-all placeholder:text-slate-400"
-            />
-          </div>
-
           <div className="flex items-center gap-5 ml-auto">
             <button className="relative p-2 text-slate-400 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-full transition-all">
               <Bell size={20} />
-              <span className="absolute top-1.5 right-2 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-white"></span>
             </button>
             <div className="h-8 w-px bg-slate-200 hidden md:block"></div>
             <Link to="/dashboard/profile" className="flex items-center gap-3 pl-2">
               <div className="text-right hidden md:block">
-                <p className="text-sm font-bold text-slate-900 leading-none">Dias M.</p>
-                <p className="text-xs font-medium text-slate-500 mt-1">Volunteer</p>
+                <p className="text-sm font-bold text-slate-900 leading-none">{user.name}</p>
+                <p className="text-xs font-medium text-slate-500 mt-1">
+                  {user.role === 'Participant' ? 'Volunteer' : 'Coordinator'}
+                </p>
               </div>
               <img 
-                src="https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?crop=faces&fit=crop&w=100&h=100&q=80" 
-                alt="User" 
+                src={getAvatarUrl()} 
+                alt={user.name} 
                 className="w-10 h-10 rounded-full object-cover border-2 border-slate-100 shadow-sm"
               />
             </Link>
@@ -172,6 +227,16 @@ export default function DashboardLayout() {
                 </Link>
               ))}
             </nav>
+            
+            <div className="p-4 border-t border-slate-100">
+              <button 
+                onClick={handleLogout}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-rose-600 hover:bg-rose-50 transition-all duration-200"
+              >
+                <LogOut size={20} className="text-rose-400" />
+                Log Out
+              </button>
+            </div>
           </motion.div>
         </div>
       )}
