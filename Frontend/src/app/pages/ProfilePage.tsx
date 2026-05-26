@@ -3,8 +3,9 @@ import { motion } from 'motion/react';
 import { Link, useNavigate } from 'react-router';
 import { 
   Clock, Trophy, MapPin, Edit3, CheckCircle2, X, AlertCircle, 
-  Calendar, Users, Briefcase, TrendingUp, PlusCircle
+  Calendar, Users, Briefcase, TrendingUp, PlusCircle, Download, Award
 } from 'lucide-react';
+import { jsPDF } from 'jspdf';
 
 const API_BASE = (() => {
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
@@ -60,12 +61,17 @@ export default function ProfilePage() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
   const [myEvents, setMyEvents] = useState<Event[]>([]);
-  const [history, setHistory] = useState<JoinHistory[]>([]); // ← ДОБАВЛЕНО
+  const [history, setHistory] = useState<JoinHistory[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [message, setMessage] = useState<{ text: string; type: string } | null>(null);
+  
+  // Certificate modal state
+  const [showCertificateModal, setShowCertificateModal] = useState(false);
+  const [certificateName, setCertificateName] = useState('');
   
   const [editName, setEditName] = useState('');
   const [editRegion, setEditRegion] = useState('');
@@ -89,7 +95,7 @@ export default function ProfilePage() {
         setEditRegion(currentUser.region);
         setEditBirthDate(currentUser.birthDate?.split('T')[0] || '');
         
-        // Load events (для смен)
+        // Load events
         const eventsRes = await fetch(`${API_BASE}/api/items`);
         if (eventsRes.ok) {
           const eventsData = await eventsRes.json();
@@ -99,14 +105,13 @@ export default function ProfilePage() {
           }));
           setEvents(parsedEvents);
           
-          // If coordinator, load their created events
           if (currentUser.role === 'Coordinator') {
             const myEventsList = parsedEvents.filter((e: Event) => e.coordinatorId === currentUser.id);
             setMyEvents(myEventsList);
           }
         }
         
-        // 🔧 ДОБАВЛЕНО: Load volunteer history for all users (both volunteer and coordinator)
+        // Load volunteer history for all users
         const joinsRes = await fetch(`${API_BASE}/api/users/${currentUser.id}/joins`);
         if (joinsRes.ok) {
           const joinsData = await joinsRes.json();
@@ -123,22 +128,15 @@ export default function ProfilePage() {
     loadUserData();
   }, [navigate]);
 
+  const showMessage = (text: string, type: 'success' | 'error') => {
+    setMessage({ text, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
   const getShiftDetails = (eventId: string, shiftName: string): Shift | null => {
     const event = events.find(e => e.id === eventId);
     if (!event || !event.shifts) return null;
     return event.shifts.find(s => s.name === shiftName) || null;
-  };
-
-  const isPastShift = (eventId: string, shiftName: string): boolean => {
-    const shift = getShiftDetails(eventId, shiftName);
-    if (!shift) return false;
-    
-    const [year, month, day] = shift.date.split('-');
-    const [endHour, endMinute] = shift.endTime.split(':');
-    const shiftEndDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(endHour), parseInt(endMinute));
-    
-    const now = new Date();
-    return shiftEndDateTime < now;
   };
 
   const getShiftDurationInHours = (startTime: string, endTime: string): number => {
@@ -156,7 +154,18 @@ export default function ProfilePage() {
     return durationMinutes / 60;
   };
 
-  // Расчет часов для волонтера
+  const isPastShift = (eventId: string, shiftName: string): boolean => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return false;
+    
+    const [year, month, day] = shift.date.split('-');
+    const [endHour, endMinute] = shift.endTime.split(':');
+    const shiftEndDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(endHour), parseInt(endMinute));
+    
+    const now = new Date();
+    return shiftEndDateTime < now;
+  };
+
   const getTotalHours = (): number => {
     let total = 0;
     history.forEach(join => {
@@ -176,9 +185,236 @@ export default function ProfilePage() {
     return history.filter(join => isPastShift(join.eventId, join.shift)).length;
   };
 
+  const getUniqueRegions = (): number => {
+    return new Set(history.map(h => h.eventRegion)).size;
+  };
+
   const totalHours = getTotalHours();
   const completedShifts = getCompletedShiftsCount();
-  const uniqueRegions = new Set(history.map(h => h.eventRegion)).size;
+  const uniqueRegions = getUniqueRegions();
+
+  // Экспорт CSV для волонтера
+  const handleExportMyHours = () => {
+    if (!user || history.length === 0) {
+      showMessage('No volunteer history to export', 'error');
+      return;
+    }
+    
+    const headers = ['Event Name', 'Region', 'Shift', 'Date', 'Time', 'Duration (hours)', 'Status'];
+    
+    const rows = history.map(item => {
+      const shiftDetails = getShiftDetails(item.eventId, item.shift);
+      const isPast = isPastShift(item.eventId, item.shift);
+      const duration = shiftDetails ? getShiftDurationInHours(shiftDetails.startTime, shiftDetails.endTime) : 4;
+      const shiftDate = shiftDetails ? new Date(shiftDetails.date).toLocaleDateString() : '-';
+      const shiftTime = shiftDetails ? `${shiftDetails.startTime} - ${shiftDetails.endTime}` : '-';
+      
+      return [
+        `"${item.eventName}"`,
+        `"${item.eventRegion}"`,
+        `"${item.shift}"`,
+        `"${shiftDate}"`,
+        `"${shiftTime}"`,
+        duration.toFixed(1),
+        isPast ? 'Completed' : 'Upcoming'
+      ].join(',');
+    });
+    
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    const filename = `volunteer_hours_${user.name.replace(/\s/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showMessage('Impact report downloaded successfully!', 'success');
+  };
+
+  // Открытие модального окна для сертификата
+  const handleOpenCertificateModal = () => {
+    if (!user || history.length === 0) {
+      showMessage('No volunteer history to generate certificate', 'error');
+      return;
+    }
+    if (completedShifts === 0) {
+      showMessage('You need to complete at least one shift to get a certificate', 'error');
+      return;
+    }
+    setCertificateName(user.name);
+    setShowCertificateModal(true);
+  };
+
+  // Генерация PDF сертификата
+  const handleGenerateCertificate = async () => {
+    if (!certificateName.trim()) {
+      showMessage('Please enter your name', 'error');
+      return;
+    }
+
+    const completedHistory = history.filter(join => isPastShift(join.eventId, join.shift));
+    const totalHoursValue = getTotalHours();
+
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = 297, H = 210, cx = W / 2;
+
+    // === ФОН ===
+    pdf.setFillColor(255, 252, 245);
+    pdf.rect(0, 0, W, H, 'F');
+
+    // Боковые декоративные полосы
+    pdf.setFillColor(251, 146, 60); // orange-400
+    pdf.rect(0, 0, 8, H, 'F');
+    pdf.rect(W - 8, 0, 8, H, 'F');
+
+    // Тонкая золотая линия рядом с полосой
+    pdf.setDrawColor(251, 146, 60);
+    pdf.setLineWidth(0.5);
+    pdf.line(11, 20, 11, H - 20);
+    pdf.line(W - 11, 20, W - 11, H - 20);
+
+    // === ВЕРХНИЙ БЛОК ===
+    pdf.setFillColor(255, 237, 213); // orange-100
+    pdf.rect(20, 14, W - 40, 28, 'F');
+
+    pdf.setFontSize(11);
+    pdf.setTextColor(154, 52, 18); // orange-800
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('V O L U K Z', cx, 24, { align: 'center' });
+
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(194, 65, 12);
+    pdf.text('VOLUNTEER MANAGEMENT PLATFORM · KAZAKHSTAN', cx, 31, { align: 'center' });
+
+    pdf.setDrawColor(251, 146, 60);
+    pdf.setLineWidth(0.8);
+    pdf.line(20, 42, W - 20, 42);
+
+    // === ЗАГОЛОВОК ===
+    pdf.setFontSize(42);
+    pdf.setFont('times', 'bold');
+    pdf.setTextColor(30, 30, 30);
+    pdf.text('Certificate', cx, 68, { align: 'center' });
+
+    pdf.setFontSize(13);
+    pdf.setFont('times', 'italic');
+    pdf.setTextColor(120, 120, 130);
+    pdf.text('of Volunteer Appreciation', cx, 80, { align: 'center' });
+
+    // Декоративная линия с ромбом
+    pdf.setDrawColor(251, 146, 60);
+    pdf.setLineWidth(0.6);
+    pdf.line(cx - 70, 87, cx - 6, 87);
+    pdf.line(cx + 6, 87, cx + 70, 87);
+    pdf.setFillColor(251, 146, 60);
+    pdf.circle(cx, 87, 2.5, 'F');
+
+    // === ОСНОВНОЙ ТЕКСТ ===
+    pdf.setFontSize(10);
+    pdf.setFont('times', 'normal');
+    pdf.setTextColor(100, 100, 110);
+    pdf.text('This certificate is proudly presented to', cx, 98, { align: 'center' });
+
+    // Имя получателя
+    pdf.setFontSize(30);
+    pdf.setFont('times', 'bold');
+    pdf.setTextColor(20, 20, 30);
+    pdf.text(certificateName, cx, 118, { align: 'center' });
+
+    // Подчёркивание имени
+    const nameWidth = pdf.getTextWidth(certificateName);
+    pdf.setDrawColor(251, 146, 60);
+    pdf.setLineWidth(1);
+    pdf.line(cx - nameWidth / 2, 121, cx + nameWidth / 2, 121);
+
+    pdf.setFontSize(10);
+    pdf.setFont('times', 'italic');
+    pdf.setTextColor(100, 100, 110);
+    pdf.text('in recognition of dedicated volunteer service and community contribution', cx, 131, { align: 'center' });
+
+    // === БЛОКИ СО СТАТИСТИКОЙ ===
+    const statsY = 141;
+    const blockW = 72, blockH = 24, gap = 8;
+    const totalW = blockW * 3 + gap * 2;
+    const startX = cx - totalW / 2;
+
+    const drawStatBlock = (x: number, icon: string, value: string, label: string) => {
+      pdf.setFillColor(255, 247, 237);
+      pdf.setDrawColor(251, 146, 60);
+      pdf.setLineWidth(0.5);
+      pdf.roundedRect(x, statsY, blockW, blockH, 3, 3, 'FD');
+
+      pdf.setFontSize(16);
+      pdf.setFont('times', 'bold');
+      pdf.setTextColor(234, 88, 12);
+      pdf.text(value, x + blockW / 2, statsY + 11, { align: 'center' });
+
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(120, 120, 130);
+      pdf.text(label.toUpperCase(), x + blockW / 2, statsY + 19, { align: 'center' });
+    };
+
+    drawStatBlock(startX, '🏆', String(completedHistory.length), 'Events Completed');
+    drawStatBlock(startX + blockW + gap, '⏱', `${totalHoursValue.toFixed(1)}h`, 'Hours Contributed');
+    drawStatBlock(startX + (blockW + gap) * 2, '📍', String(uniqueRegions), 'Regions Served');
+
+    // === ПОДПИСИ ===
+    const sigY = H - 42;
+
+    // Левая подпись
+    pdf.setDrawColor(180, 180, 190);
+    pdf.setLineWidth(0.4);
+    pdf.line(cx - 95, sigY, cx - 25, sigY);
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(60, 60, 70);
+    pdf.text('AUTHORIZED BY', cx - 60, sigY + 5, { align: 'center' });
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(120, 120, 130);
+    pdf.text('VoluKZ Platform', cx - 60, sigY + 10, { align: 'center' });
+
+    // Центральная печать
+    pdf.setDrawColor(251, 146, 60);
+    pdf.setFillColor(255, 247, 237);
+    pdf.setLineWidth(0.8);
+    pdf.circle(cx, sigY + 3, 10, 'FD');
+    pdf.setFontSize(6);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(154, 52, 18);
+    pdf.text('VOLUKZ', cx, sigY + 2, { align: 'center' });
+    pdf.text('OFFICIAL', cx, sigY + 6, { align: 'center' });
+
+    // Правая подпись
+    pdf.setDrawColor(180, 180, 190);
+    pdf.setLineWidth(0.4);
+    pdf.line(cx + 25, sigY, cx + 95, sigY);
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(60, 60, 70);
+    pdf.text('DATE OF ISSUE', cx + 60, sigY + 5, { align: 'center' });
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(120, 120, 130);
+    pdf.text(new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }), cx + 60, sigY + 10, { align: 'center' });
+
+    // === НИЖНИЙ КОЛОНТИТУЛ ===
+    pdf.setFillColor(255, 237, 213);
+    pdf.rect(20, H - 18, W - 40, 12, 'F');
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(154, 52, 18);
+    pdf.text('Thank you for making a difference · www.volukz.org · Kazakhstan Volunteer Platform', cx, H - 10, { align: 'center' });
+
+    pdf.save(`VoluKZ_Certificate_${certificateName.replace(/\s/g, '_')}.pdf`);
+    showMessage('Certificate generated successfully! 🎉', 'success');
+    setShowCertificateModal(false);
+    setCertificateName('');
+  };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -245,9 +481,18 @@ export default function ProfilePage() {
   };
 
   const isCoordinator = user.role === 'Coordinator';
+  const hasCompletedShifts = completedShifts > 0;
 
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-12">
+      {message && (
+        <div className={`fixed top-24 right-6 z-50 px-4 py-3 rounded-xl shadow-lg ${
+          message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
+          {message.text}
+        </div>
+      )}
+
       {/* Profile Header */}
       <div className="bg-white rounded-[2rem] p-8 md:p-10 border border-slate-100 shadow-sm relative overflow-hidden">
         <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-50 to-teal-50 rounded-bl-full opacity-60 -z-0 pointer-events-none" />
@@ -380,7 +625,7 @@ export default function ProfilePage() {
 
       {/* Content based on role */}
       {isCoordinator ? (
-        // Coordinator View - только мои события
+        // Coordinator View
         <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
           <h3 className="text-2xl font-extrabold text-slate-900 mb-8 flex items-center gap-2">
             <Briefcase size={24} className="text-orange-600" />
@@ -426,9 +671,8 @@ export default function ProfilePage() {
           )}
         </div>
       ) : (
-        // Volunteer View - статистика и история
+        // Volunteer View
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* Stats Column */}
           <div className="space-y-8">
             <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
               <h3 className="text-lg font-extrabold text-slate-900 mb-6">Impact Summary</h3>
@@ -464,10 +708,31 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          {/* History Column */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm h-full">
-              <h3 className="text-2xl font-extrabold text-slate-900 mb-8">Volunteering History</h3>
+              <div className="flex items-center justify-between mb-8 flex-wrap gap-3">
+                <h3 className="text-2xl font-extrabold text-slate-900">Volunteering History</h3>
+                <div className="flex gap-2">
+                  {hasCompletedShifts && (
+                    <button
+                      onClick={handleOpenCertificateModal}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-semibold hover:bg-orange-700 transition-colors"
+                    >
+                      <Award size={16} />
+                      Get Certificate
+                    </button>
+                  )}
+                  {history.length > 0 && (
+                    <button
+                      onClick={handleExportMyHours}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors"
+                    >
+                      <Download size={16} />
+                      Download Report
+                    </button>
+                  )}
+                </div>
+              </div>
               
               {history.length === 0 ? (
                 <div className="text-center py-12">
@@ -524,6 +789,65 @@ export default function ProfilePage() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Certificate Name Modal */}
+      {showCertificateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowCertificateModal(false)}>
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-slate-900">Generate Certificate</h2>
+              <button onClick={() => setShowCertificateModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-bold text-slate-700 block mb-1">Name on Certificate</label>
+                <input
+                  type="text"
+                  value={certificateName}
+                  onChange={(e) => setCertificateName(e.target.value)}
+                  placeholder="Enter your full name"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-orange-100 focus:border-orange-500 outline-none"
+                  autoFocus
+                />
+                <p className="text-xs text-slate-400 mt-1">The name will appear in uppercase on the certificate</p>
+              </div>
+              
+              <div className="bg-amber-50 rounded-xl p-4 border border-amber-100">
+                <p className="text-sm font-semibold text-amber-800 mb-2">📜 Certificate includes:</p>
+                <ul className="text-xs text-amber-700 space-y-1">
+                  <li>• <strong>{completedShifts}</strong> completed event(s)</li>
+                  <li>• <strong>{totalHours.toFixed(1)}</strong> total hours contributed</li>
+                  <li>• Professional design with gold accents</li>
+                  <li>• Official VoluKZ seal</li>
+                </ul>
+              </div>
+            
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={handleGenerateCertificate}
+                  className="flex-1 bg-orange-600 text-white py-3 rounded-xl font-semibold hover:bg-orange-700 transition-colors"
+                >
+                  Generate Certificate
+                </button>
+                <button
+                  onClick={() => setShowCertificateModal(false)}
+                  className="flex-1 border border-slate-200 text-slate-700 py-3 rounded-xl font-semibold hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </motion.div>
         </div>
       )}
     </div>
