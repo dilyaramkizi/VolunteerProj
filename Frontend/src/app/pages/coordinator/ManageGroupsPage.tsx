@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router';
 import { 
@@ -15,7 +15,8 @@ import {
   Clock,
   Send,
   Lock,
-  Unlock
+  Unlock,
+  RefreshCw
 } from 'lucide-react';
 
 const API_BASE = (() => {
@@ -50,7 +51,7 @@ interface Event {
   id: string;
   name: string;
   region: string;
-  coordinatorId: string; // ← добавляем это поле
+  coordinatorId: string;
 }
 
 interface ChatMessage {
@@ -86,7 +87,9 @@ export default function CoordinatorGroupsPage() {
   const [availableMembers, setAvailableMembers] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: string } | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const storedUser = localStorage.getItem('ngo_current_user');
@@ -108,32 +111,38 @@ export default function CoordinatorGroupsPage() {
     }
   }, [userId]);
 
-  const loadData = async () => {
+  // Оптимизированная загрузка - ПАРАЛЛЕЛЬНЫЕ запросы
+  const loadData = useCallback(async () => {
     if (!userId) return;
     
     setLoading(true);
     try {
-      // Load events
-      const eventsRes = await fetch(`${API_BASE}/api/items`);
-      const allEvents = await eventsRes.json();
+      // Запускаем оба запроса ПАРАЛЛЕЛЬНО
+      const [eventsRes, groupsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/items`),
+        fetch(`${API_BASE}/api/users/${userId}/groups`)
+      ]);
+      
+      // Параллельно парсим JSON
+      const [allEvents, groupsData] = await Promise.all([
+        eventsRes.json(),
+        groupsRes.ok ? groupsRes.json() : []
+      ]);
+      
       const myEventsList = allEvents.filter((e: Event) => e.coordinatorId === userId);
       setMyEvents(myEventsList);
+      setGroups(groupsData);
       
-      // Load groups
-      const groupsRes = await fetch(`${API_BASE}/api/users/${userId}/groups`);
-      if (groupsRes.ok) {
-        const groupsData = await groupsRes.json();
-        setGroups(groupsData);
-      }
     } catch (error) {
       console.error('Failed to load data:', error);
       showMessage('Failed to load groups', 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId]);
 
-  const loadGroupChat = async (groupId: string) => {
+  // Загрузка чата выбранной группы
+  const loadGroupChat = useCallback(async (groupId: string) => {
     if (!userId) return;
     
     try {
@@ -145,13 +154,12 @@ export default function CoordinatorGroupsPage() {
     } catch (error) {
       console.error('Failed to load chat:', error);
     }
-  };
+  }, [userId]);
 
   const loadAvailableMembers = async (eventId: string) => {
     if (!userId) return;
     
     try {
-      // Get participants from the event
       const response = await fetch(`${API_BASE}/api/coordinators/${userId}/participants?eventId=${eventId}`);
       if (response.ok) {
         const participants = await response.json();
@@ -186,7 +194,7 @@ export default function CoordinatorGroupsPage() {
         setNewGroupName('');
         setNewGroupDesc('');
         setSelectedEventId('');
-        loadData();
+        await loadData(); // Обновляем список групп
       } else {
         const error = await response.json();
         showMessage(error.message || 'Failed to create group', 'error');
@@ -211,7 +219,7 @@ export default function CoordinatorGroupsPage() {
 
       if (response.ok) {
         showMessage('Member added successfully!', 'success');
-        loadData();
+        await loadData(); // Обновляем список групп
         setShowAddMemberModal(false);
       } else {
         const error = await response.json();
@@ -225,24 +233,31 @@ export default function CoordinatorGroupsPage() {
   };
 
   const handleSendMessage = async (groupId: string) => {
-    if (!userId || !newMessage.trim()) return;
+    if (!userId || !newMessage.trim() || sendingMessage) return;
 
+    setSendingMessage(true);
+    const messageText = newMessage;
+    setNewMessage(''); // Очищаем сразу для UX
+    
     try {
       const response = await fetch(`${API_BASE}/api/groups/${groupId}/chat/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, message: newMessage })
+        body: JSON.stringify({ userId, message: messageText })
       });
 
       if (response.ok) {
-        setNewMessage('');
-        loadGroupChat(groupId);
+        await loadGroupChat(groupId);
       } else {
         const error = await response.json();
         showMessage(error.message || 'Failed to send message', 'error');
+        setNewMessage(messageText); // Восстанавливаем сообщение при ошибке
       }
     } catch (error) {
       showMessage('Network error', 'error');
+      setNewMessage(messageText);
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -258,9 +273,9 @@ export default function CoordinatorGroupsPage() {
 
       if (response.ok) {
         showMessage(`Chat mode updated`, 'success');
-        loadData();
+        await loadData();
         if (selectedGroup?.id === groupId) {
-          loadGroupChat(groupId);
+          setSelectedGroup({ ...selectedGroup, coordinatorsOnly: !coordinatorsOnly });
         }
       } else {
         const error = await response.json();
@@ -271,10 +286,10 @@ export default function CoordinatorGroupsPage() {
     }
   };
 
-  const handleSelectGroup = async (group: Group) => {
+  const handleSelectGroup = useCallback(async (group: Group) => {
     setSelectedGroup(group);
     await loadGroupChat(group.id);
-  };
+  }, [loadGroupChat]);
 
   const showMessage = (text: string, type: 'success' | 'error') => {
     setMessage({ text, type });
@@ -286,10 +301,35 @@ export default function CoordinatorGroupsPage() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const filteredGroups = groups.filter(group =>
+    group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    group.eventName.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Skeleton Loader
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="w-12 h-12 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin" />
+      <div className="space-y-8">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <div>
+            <div className="h-9 w-32 bg-slate-200 rounded-lg animate-pulse" />
+            <div className="h-5 w-64 bg-slate-200 rounded-lg mt-2 animate-pulse" />
+          </div>
+          <div className="h-12 w-40 bg-slate-200 rounded-full animate-pulse" />
+        </div>
+        <div className="grid lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1">
+            <div className="h-12 bg-slate-200 rounded-xl animate-pulse mb-4" />
+            <div className="space-y-3">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="h-24 bg-slate-100 rounded-2xl animate-pulse" />
+              ))}
+            </div>
+          </div>
+          <div className="lg:col-span-2">
+            <div className="h-[600px] bg-slate-100 rounded-3xl animate-pulse" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -318,18 +358,27 @@ export default function CoordinatorGroupsPage() {
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Groups</h1>
           <p className="text-slate-500 font-medium mt-2 text-lg">Manage chat groups for your events.</p>
         </div>
-        <button 
-          onClick={() => setShowCreateModal(true)}
-          className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-orange-600 text-white font-bold text-sm hover:bg-orange-700 hover:shadow-lg transition-all"
-        >
-          <PlusCircle size={18} />
-          Create New Group
-          <ChevronRight size={18} />
-        </button>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => loadData()}
+            className="inline-flex items-center gap-2 px-4 py-3 rounded-full bg-white border border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-50 transition-all"
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+          <button 
+            onClick={() => setShowCreateModal(true)}
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-orange-600 text-white font-bold text-sm hover:bg-orange-700 hover:shadow-lg transition-all"
+          >
+            <PlusCircle size={18} />
+            Create New Group
+            <ChevronRight size={18} />
+          </button>
+        </div>
       </div>
 
       {/* Groups List */}
-      {groups.length === 0 ? (
+      {filteredGroups.length === 0 ? (
         <div className="bg-white rounded-3xl p-12 text-center border border-slate-100">
           <Users size={48} className="text-slate-300 mx-auto mb-4" />
           <h3 className="text-xl font-bold text-slate-900 mb-2">No groups yet</h3>
@@ -351,12 +400,14 @@ export default function CoordinatorGroupsPage() {
               <input 
                 type="text" 
                 placeholder="Search groups..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all shadow-sm"
               />
             </div>
             
             <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
-              {groups.map((group) => (
+              {filteredGroups.map((group) => (
                 <motion.button
                   key={group.id}
                   onClick={() => handleSelectGroup(group)}
@@ -381,11 +432,10 @@ export default function CoordinatorGroupsPage() {
             </div>
           </div>
 
-          {/* Chat Area */}
+          {/* Chat Area - остальное без изменений */}
           <div className="lg:col-span-2">
             {selectedGroup ? (
               <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col h-[600px]">
-                {/* Chat Header */}
                 <div className="p-5 border-b border-slate-100 bg-gradient-to-r from-orange-50 to-transparent">
                   <div className="flex items-center justify-between">
                     <div>
@@ -404,7 +454,6 @@ export default function CoordinatorGroupsPage() {
                   </div>
                 </div>
 
-                {/* Add Member Button */}
                 <div className="p-4 border-b border-slate-100 bg-slate-50">
                   <button
                     onClick={() => {
@@ -418,7 +467,6 @@ export default function CoordinatorGroupsPage() {
                   </button>
                 </div>
 
-                {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-5 space-y-4">
                   {chatMessages.length === 0 ? (
                     <div className="text-center py-12">
@@ -446,23 +494,27 @@ export default function CoordinatorGroupsPage() {
                   )}
                 </div>
 
-                {/* Message Input */}
                 <div className="p-4 border-t border-slate-100 bg-white">
                   <div className="flex gap-3">
                     <input
                       type="text"
                       value={newMessage}
                       onChange={(e) => setNewMessage(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSendMessage(selectedGroup.id)}
+                      onKeyPress={(e) => e.key === 'Enter' && !sendingMessage && handleSendMessage(selectedGroup.id)}
                       placeholder="Type a message..."
-                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all"
+                      disabled={sendingMessage}
+                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-orange-100 focus:border-orange-500 outline-none transition-all disabled:opacity-50"
                     />
                     <button
                       onClick={() => handleSendMessage(selectedGroup.id)}
-                      disabled={!newMessage.trim()}
+                      disabled={!newMessage.trim() || sendingMessage}
                       className="px-5 py-3 bg-orange-600 text-white rounded-xl font-semibold hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <Send size={18} />
+                      {sendingMessage ? (
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <Send size={18} />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -478,7 +530,7 @@ export default function CoordinatorGroupsPage() {
         </div>
       )}
 
-      {/* Create Group Modal */}
+      {/* Модальные окна (Create Group, Add Member) - без изменений */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowCreateModal(false)}>
           <motion.div 
@@ -551,7 +603,6 @@ export default function CoordinatorGroupsPage() {
         </div>
       )}
 
-      {/* Add Member Modal */}
       {showAddMemberModal && selectedGroup && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowAddMemberModal(false)}>
           <motion.div 

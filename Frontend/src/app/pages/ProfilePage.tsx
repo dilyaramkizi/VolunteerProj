@@ -1,13 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { useNavigate } from 'react-router';
-import { Clock, Trophy, MapPin, Edit3, CheckCircle2, X, AlertCircle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router';
+import { 
+  Clock, Trophy, MapPin, Edit3, CheckCircle2, X, AlertCircle, 
+  Calendar, Users, Briefcase, TrendingUp, PlusCircle
+} from 'lucide-react';
 
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE ??
-  (window.location.hostname === 'localhost' ? 'http://localhost:4000' : '');
+const API_BASE = (() => {
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    return 'http://localhost:4000';
+  }
+  return '';
+})();
 
 const REGIONS = ['Almaty', 'Astana'];
+
+interface Shift {
+  id: string;
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  volunteersNeeded: number;
+}
+
+interface Event {
+  id: string;
+  name: string;
+  description: string;
+  region: string;
+  shifts?: Shift[];
+  coordinatorId: string;
+  coordinatorName: string;
+  createdAt: string;
+}
 
 interface User {
   id: string;
@@ -27,12 +53,15 @@ interface JoinHistory {
   shift: string;
   status: string;
   requestedAt: string;
+  decidedAt?: string;
 }
 
 export default function ProfilePage() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
-  const [history, setHistory] = useState<JoinHistory[]>([]);
+  const [myEvents, setMyEvents] = useState<Event[]>([]);
+  const [history, setHistory] = useState<JoinHistory[]>([]); // ← ДОБАВЛЕНО
+  const [events, setEvents] = useState<Event[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState('');
@@ -49,8 +78,6 @@ export default function ProfilePage() {
       setIsLoading(true);
       try {
         const storedUser = localStorage.getItem('ngo_current_user');
-        console.log('Loaded user:', storedUser); // Отладка
-        
         if (!storedUser) {
           navigate('/login');
           return;
@@ -62,11 +89,30 @@ export default function ProfilePage() {
         setEditRegion(currentUser.region);
         setEditBirthDate(currentUser.birthDate?.split('T')[0] || '');
         
-        const response = await fetch(`${API_BASE}/api/users/${currentUser.id}/joins`);
-        if (response.ok) {
-          const data = await response.json();
-          setHistory(data.filter((h: JoinHistory) => h.status === 'approved'));
+        // Load events (для смен)
+        const eventsRes = await fetch(`${API_BASE}/api/items`);
+        if (eventsRes.ok) {
+          const eventsData = await eventsRes.json();
+          const parsedEvents = eventsData.map((event: any) => ({
+            ...event,
+            shifts: event.shifts ? (typeof event.shifts === 'string' ? JSON.parse(event.shifts) : event.shifts) : []
+          }));
+          setEvents(parsedEvents);
+          
+          // If coordinator, load their created events
+          if (currentUser.role === 'Coordinator') {
+            const myEventsList = parsedEvents.filter((e: Event) => e.coordinatorId === currentUser.id);
+            setMyEvents(myEventsList);
+          }
         }
+        
+        // 🔧 ДОБАВЛЕНО: Load volunteer history for all users (both volunteer and coordinator)
+        const joinsRes = await fetch(`${API_BASE}/api/users/${currentUser.id}/joins`);
+        if (joinsRes.ok) {
+          const joinsData = await joinsRes.json();
+          setHistory(joinsData.filter((j: JoinHistory) => j.status === 'approved'));
+        }
+        
       } catch (err) {
         console.error('Failed to load profile:', err);
       } finally {
@@ -76,6 +122,63 @@ export default function ProfilePage() {
     
     loadUserData();
   }, [navigate]);
+
+  const getShiftDetails = (eventId: string, shiftName: string): Shift | null => {
+    const event = events.find(e => e.id === eventId);
+    if (!event || !event.shifts) return null;
+    return event.shifts.find(s => s.name === shiftName) || null;
+  };
+
+  const isPastShift = (eventId: string, shiftName: string): boolean => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return false;
+    
+    const [year, month, day] = shift.date.split('-');
+    const [endHour, endMinute] = shift.endTime.split(':');
+    const shiftEndDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(endHour), parseInt(endMinute));
+    
+    const now = new Date();
+    return shiftEndDateTime < now;
+  };
+
+  const getShiftDurationInHours = (startTime: string, endTime: string): number => {
+    const start = startTime.split(':').map(Number);
+    const end = endTime.split(':').map(Number);
+    
+    let startMinutes = start[0] * 60 + (start[1] || 0);
+    let endMinutes = end[0] * 60 + (end[1] || 0);
+    
+    if (endMinutes < startMinutes) {
+      endMinutes += 24 * 60;
+    }
+    
+    const durationMinutes = endMinutes - startMinutes;
+    return durationMinutes / 60;
+  };
+
+  // Расчет часов для волонтера
+  const getTotalHours = (): number => {
+    let total = 0;
+    history.forEach(join => {
+      if (isPastShift(join.eventId, join.shift)) {
+        const shift = getShiftDetails(join.eventId, join.shift);
+        if (shift) {
+          total += getShiftDurationInHours(shift.startTime, shift.endTime);
+        } else {
+          total += 4;
+        }
+      }
+    });
+    return total;
+  };
+
+  const getCompletedShiftsCount = (): number => {
+    return history.filter(join => isPastShift(join.eventId, join.shift)).length;
+  };
+
+  const totalHours = getTotalHours();
+  const completedShifts = getCompletedShiftsCount();
+  const uniqueRegions = new Set(history.map(h => h.eventRegion)).size;
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,15 +226,6 @@ export default function ProfilePage() {
     }
   };
 
-  const getStats = () => {
-    const totalShifts = history.length;
-    const totalHours = history.length * 4;
-    const uniqueRegions = new Set(history.map(h => h.eventRegion)).size;
-    return { totalHours, totalShifts, uniqueRegions };
-  };
-
-  const stats = user ? getStats() : { totalHours: 0, totalShifts: 0, uniqueRegions: 0 };
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -150,8 +244,11 @@ export default function ProfilePage() {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=f97316&color=fff&bold=true`;
   };
 
+  const isCoordinator = user.role === 'Coordinator';
+
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-12">
+      {/* Profile Header */}
       <div className="bg-white rounded-[2rem] p-8 md:p-10 border border-slate-100 shadow-sm relative overflow-hidden">
         <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-50 to-teal-50 rounded-bl-full opacity-60 -z-0 pointer-events-none" />
         
@@ -187,6 +284,7 @@ export default function ProfilePage() {
         </div>
       </div>
 
+      {/* Edit Profile Modal */}
       {isEditing && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <motion.div 
@@ -280,77 +378,154 @@ export default function ProfilePage() {
         </div>
       )}
 
-      <div className="grid lg:grid-cols-3 gap-8">
-        <div className="space-y-8">
-          <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
-            <h3 className="text-lg font-extrabold text-slate-900 mb-6">Impact Summary</h3>
-            <div className="space-y-6">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <Clock size={24} />
+      {/* Content based on role */}
+      {isCoordinator ? (
+        // Coordinator View - только мои события
+        <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+          <h3 className="text-2xl font-extrabold text-slate-900 mb-8 flex items-center gap-2">
+            <Briefcase size={24} className="text-orange-600" />
+            Events I Created
+          </h3>
+          
+          {myEvents.length === 0 ? (
+            <div className="text-center py-12">
+              <Calendar size={48} className="text-slate-300 mx-auto mb-4" />
+              <p className="text-lg font-medium text-slate-500">No events created yet</p>
+              <p className="text-sm text-slate-400 mt-2">Create your first event to get started!</p>
+              <Link 
+                to="/dashboard/create-event"
+                className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-orange-600 text-white rounded-xl font-semibold hover:bg-orange-700 transition-colors"
+              >
+                <PlusCircle size={16} />
+                Create Event
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {myEvents.map((event) => (
+                <div key={event.id} className="bg-slate-50 rounded-2xl p-5 border border-slate-100">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h4 className="text-lg font-bold text-slate-900 mb-1">{event.name}</h4>
+                      <p className="text-sm text-slate-500">{event.region}</p>
+                    </div>
+                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded">
+                      {event.shifts?.length || 0} shifts
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-600 line-clamp-2 mb-3">{event.description}</p>
+                  <div className="flex items-center gap-4 text-xs text-slate-400">
+                    <span className="flex items-center gap-1">
+                      <Calendar size={12} />
+                      Created {new Date(event.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Total Hours</p>
-                  <p className="text-2xl font-black text-slate-900 tracking-tight">{stats.totalHours}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        // Volunteer View - статистика и история
+        <div className="grid lg:grid-cols-3 gap-8">
+          {/* Stats Column */}
+          <div className="space-y-8">
+            <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
+              <h3 className="text-lg font-extrabold text-slate-900 mb-6">Impact Summary</h3>
+              <div className="space-y-6">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                    <Clock size={24} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Total Hours</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tight">{totalHours.toFixed(1)}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                  <Trophy size={24} />
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <Trophy size={24} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Completed Shifts</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tight">{completedShifts}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Completed Shifts</p>
-                  <p className="text-2xl font-black text-slate-900 tracking-tight">{stats.totalShifts}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-                  <MapPin size={24} />
-                </div>
-                <div>
-                  <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Locations Served</p>
-                  <p className="text-2xl font-black text-slate-900 tracking-tight">{stats.uniqueRegions}</p>
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                    <MapPin size={24} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Locations Served</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tight">{uniqueRegions}</p>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm h-full">
-            <h3 className="text-2xl font-extrabold text-slate-900 mb-8">Volunteering History</h3>
-            
-            {history.length === 0 ? (
-              <div className="text-center py-12">
-                <p className="text-lg font-medium text-slate-500">No volunteering history yet</p>
-                <p className="text-sm text-slate-400 mt-2">Join events to start building your impact!</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {history.map((item) => (
-                  <div key={item.id} className="bg-slate-50 rounded-2xl p-5 border border-slate-100">
-                    <div className="flex justify-between items-start mb-3">
-                      <span className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
-                        {new Date(item.requestedAt).toLocaleDateString()}
-                      </span>
-                      <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded flex items-center gap-1">
-                        <CheckCircle2 size={12} /> Completed
-                      </span>
-                    </div>
-                    <h4 className="text-lg font-bold text-slate-900 mb-1">{item.eventName}</h4>
-                    <p className="text-sm font-medium text-slate-500">{item.eventRegion}</p>
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className="text-xs bg-white px-2 py-1 rounded-lg text-slate-600 border border-slate-200">
-                        {item.shift}
-                      </span>
-                    </div>
+          {/* History Column */}
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm h-full">
+              <h3 className="text-2xl font-extrabold text-slate-900 mb-8">Volunteering History</h3>
+              
+              {history.length === 0 ? (
+                <div className="text-center py-12">
+                  <div className="w-24 h-24 rounded-full bg-orange-100 flex items-center justify-center mx-auto mb-4">
+                    <Users size={40} className="text-orange-600" />
                   </div>
-                ))}
-              </div>
-            )}
+                  <p className="text-lg font-medium text-slate-500">No volunteering history yet</p>
+                  <p className="text-sm text-slate-400 mt-2">Join events to start building your impact!</p>
+                  <Link 
+                    to="/dashboard/opportunities"
+                    className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-orange-600 text-white rounded-xl font-semibold hover:bg-orange-700 transition-colors"
+                  >
+                    Find Opportunities
+                  </Link>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {history.map((item) => {
+                    const shiftDetails = getShiftDetails(item.eventId, item.shift);
+                    const isPast = isPastShift(item.eventId, item.shift);
+                    
+                    return (
+                      <div key={item.id} className="bg-slate-50 rounded-2xl p-5 border border-slate-100">
+                        <div className="flex justify-between items-start mb-3">
+                          <span className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                            {new Date(item.requestedAt).toLocaleDateString()}
+                          </span>
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded flex items-center gap-1 ${
+                            isPast ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            <CheckCircle2 size={12} />
+                            {isPast ? 'Completed' : 'Upcoming'}
+                          </span>
+                        </div>
+                        <h4 className="text-lg font-bold text-slate-900 mb-1">{item.eventName}</h4>
+                        <p className="text-sm font-medium text-slate-500">{item.eventRegion}</p>
+                        {shiftDetails && (
+                          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                            <span className="bg-white px-2 py-1 rounded-lg border border-slate-200">
+                              {item.shift}
+                            </span>
+                            <span className="bg-white px-2 py-1 rounded-lg border border-slate-200">
+                              {shiftDetails.startTime} - {shiftDetails.endTime}
+                            </span>
+                            <span className="bg-white px-2 py-1 rounded-lg border border-slate-200">
+                              {new Date(shiftDetails.date).toLocaleDateString()}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { Link, useNavigate } from 'react-router';
 import { 
@@ -89,37 +89,38 @@ export default function DashboardHomeCoordinator() {
     loadData(currentUser.id);
   }, [navigate]);
 
-  const loadData = async (coordinatorId: string) => {
+  // Оптимизированная загрузка данных - все запросы параллельно
+  const loadData = useCallback(async (coordinatorId: string) => {
     setIsLoading(true);
     try {
-      // Load all events
-      const eventsRes = await fetch(`${API_BASE}/api/items`);
-      const allEvents = await eventsRes.json();
+      // Запускаем ВСЕ запросы ПАРАЛЛЕЛЬНО, а не последовательно
+      const [eventsRes, requestsRes, participantsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/items`),
+        fetch(`${API_BASE}/api/coordinators/${coordinatorId}/join-requests?status=pending`),
+        fetch(`${API_BASE}/api/coordinators/${coordinatorId}/participants`)
+      ]);
       
-      // Filter my events
+      // Параллельно парсим JSON
+      const [allEvents, requests, allParticipants] = await Promise.all([
+        eventsRes.json(),
+        requestsRes.ok ? requestsRes.json() : [],
+        participantsRes.ok ? participantsRes.json() : []
+      ]);
+      
+      // Фильтруем события координатора
       const myEventsList = allEvents.filter((e: Event) => e.coordinatorId === coordinatorId);
+      
       setMyEvents(myEventsList);
+      setPendingRequests(requests);
+      setParticipants(allParticipants);
       
-      // Load pending requests
-      const requestsRes = await fetch(`${API_BASE}/api/coordinators/${coordinatorId}/join-requests?status=pending`);
-      if (requestsRes.ok) {
-        const requests = await requestsRes.json();
-        setPendingRequests(requests);
-      }
-      
-      // Load participants
-      const participantsRes = await fetch(`${API_BASE}/api/coordinators/${coordinatorId}/participants`);
-      if (participantsRes.ok) {
-        const allParticipants = await participantsRes.json();
-        setParticipants(allParticipants);
-      }
     } catch (err) {
       console.error('Failed to load coordinator data:', err);
       showMessage('Failed to load data. Please refresh.', 'error');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   const showMessage = (text: string, type: 'success' | 'error') => {
     setMessage({ text, type });
@@ -137,7 +138,6 @@ export default function DashboardHomeCoordinator() {
       
       if (response.ok) {
         showMessage(`✅ Approved ${request.participantName} for ${request.eventName}`, 'success');
-        // Refresh data
         if (user) loadData(user.id);
       } else {
         const error = await response.json();
@@ -206,10 +206,51 @@ export default function DashboardHomeCoordinator() {
     },
   ];
 
+  // Показываем скелетон во время загрузки
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="w-12 h-12 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin" />
+      <div className="space-y-8">
+        {/* Skeleton for header */}
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <div>
+            <div className="h-9 w-64 bg-slate-200 rounded-lg animate-pulse" />
+            <div className="h-6 w-96 bg-slate-200 rounded-lg mt-2 animate-pulse" />
+          </div>
+          <div className="flex gap-3">
+            <div className="h-12 w-32 bg-slate-200 rounded-full animate-pulse" />
+            <div className="h-12 w-40 bg-slate-200 rounded-full animate-pulse" />
+          </div>
+        </div>
+        
+        {/* Skeleton for stats cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="bg-white rounded-[2rem] p-8 border border-slate-100">
+              <div className="h-4 w-24 bg-slate-200 rounded mb-3 animate-pulse" />
+              <div className="h-10 w-16 bg-slate-200 rounded mb-2 animate-pulse" />
+              <div className="h-4 w-32 bg-slate-200 rounded animate-pulse" />
+            </div>
+          ))}
+        </div>
+        
+        {/* Skeleton for main content */}
+        <div className="grid lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-[2rem] p-8">
+              <div className="h-8 w-48 bg-slate-200 rounded mb-4 animate-pulse" />
+              <div className="h-4 w-64 bg-slate-200 rounded mb-6 animate-pulse" />
+              <div className="space-y-4">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-24 bg-slate-100 rounded-xl animate-pulse" />
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="space-y-8">
+            <div className="h-64 bg-gradient-to-r from-orange-600 to-orange-500 rounded-[2rem] animate-pulse" />
+            <div className="h-48 bg-white rounded-[2rem] animate-pulse" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -221,6 +262,7 @@ export default function DashboardHomeCoordinator() {
         <motion.div 
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -20 }}
           className={`fixed top-24 right-6 z-50 px-4 py-3 rounded-xl shadow-lg ${
             message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
           }`}

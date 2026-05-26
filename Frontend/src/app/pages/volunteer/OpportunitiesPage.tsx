@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { Search, Filter, MapPin, Calendar, Users, HeartHandshake, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router';
@@ -28,8 +28,7 @@ interface Event {
   coordinatorId: string;
   coordinatorName: string;
   createdAt: string;
-  shifts?: Shift[]; // Добавляем смены
-  mainDescription?: string; // Основное описание без JSON
+  shifts?: Shift[];
 }
 
 interface JoinRequest {
@@ -78,51 +77,47 @@ export default function OpportunitiesPage() {
     }
   }, [userId]);
 
-const loadData = async () => {
-  if (!userId) return;
-  
-  try {
-    const [eventsRes, requestsRes] = await Promise.all([
-      fetch(`${API_BASE}/api/items`),
-      fetch(`${API_BASE}/api/participants/${userId}/joins`)
-    ]);
+  const loadData = useCallback(async () => {
+    if (!userId) return;
     
-    const eventsData = await eventsRes.json();
-    
-    // После добавления колонки shifts в БД, парсим смены из отдельного поля
-    const parsedEvents = eventsData.map((event: any) => {
-      let shifts: Shift[] = [];
+    setLoading(true);
+    try {
+      // 🚀 ПАРАЛЛЕЛЬНЫЕ запросы
+      const [eventsRes, requestsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/items`),
+        fetch(`${API_BASE}/api/participants/${userId}/joins`)
+      ]);
       
-      // Если есть поле shifts и оно не пустое
-      if (event.shifts) {
-        try {
-          shifts = typeof event.shifts === 'string' ? JSON.parse(event.shifts) : event.shifts;
-        } catch (e) {
-          shifts = [];
+      // Параллельный парсинг JSON
+      const [eventsData, requestsData] = await Promise.all([
+        eventsRes.json(),
+        requestsRes.ok ? requestsRes.json() : []
+      ]);
+      
+      // Парсим смены из отдельного поля
+      const parsedEvents = eventsData.map((event: any) => {
+        let shifts: Shift[] = [];
+        if (event.shifts) {
+          try {
+            shifts = typeof event.shifts === 'string' ? JSON.parse(event.shifts) : event.shifts;
+          } catch (e) {
+            shifts = [];
+          }
         }
-      }
-        
-        return {
-          ...event,
-          shifts,
-        };
+        return { ...event, shifts };
       });
       
-      console.log('Loaded events with shifts:', parsedEvents);
       setEvents(parsedEvents);
+      setMyRequests(requestsData);
       
-      if (requestsRes.ok) {
-        const requestsData = await requestsRes.json();
-        setMyRequests(requestsData);
-      }
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId]);
 
-  const handleJoinEvent = async (eventId: string, shiftName: string) => {
+  const handleJoinEvent = useCallback(async (eventId: string, shiftName: string) => {
     if (!shiftName) {
       setMessage({ text: 'Please select a shift', type: 'error', eventId });
       setTimeout(() => setMessage(null), 3000);
@@ -149,17 +144,15 @@ const loadData = async () => {
     } catch (error) {
       setMessage({ text: 'Network error', type: 'error', eventId });
     } finally {
-      setTimeout(() => {
-        setMessage(null);
-      }, 3000);
+      setTimeout(() => setMessage(null), 3000);
     }
-  };
+  }, [userId, loadData]);
 
-  const getRequestStatus = (eventId: string) => {
+  const getRequestStatus = useCallback((eventId: string) => {
     const request = myRequests.find(r => r.eventId === eventId);
     if (!request) return null;
     return { status: request.status, shift: request.shift };
-  };
+  }, [myRequests]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -177,24 +170,52 @@ const loadData = async () => {
     }
   };
 
-  const getImageUrl = (photoUrl: string | undefined) => {
+  const getImageUrl = useCallback((photoUrl: string | undefined) => {
     if (!photoUrl) return 'https://placehold.co/600x400/e2e8f0/64748b?text=No+Image';
     if (photoUrl.startsWith('http')) return photoUrl;
     return `${API_BASE}${photoUrl}`;
-  };
+  }, []);
 
   const filteredEvents = events.filter(event => {
     const matchesCategory = activeCategory === 'All' || getEventCategory(event.name) === activeCategory;
     const matchesSearch = event.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          (event.mainDescription || event.description).toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          event.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           event.coordinatorName.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesCategory && matchesSearch;
   });
 
+  // Skeleton Loader
   if (loading) {
     return (
-      <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600"></div>
+      <div className="space-y-8">
+        <div className="flex flex-col gap-6 md:flex-row md:items-end justify-between">
+          <div>
+            <div className="h-9 w-48 bg-slate-200 rounded-lg animate-pulse" />
+            <div className="h-6 w-80 bg-slate-200 rounded-lg mt-2 animate-pulse" />
+          </div>
+          <div className="h-12 w-72 bg-slate-200 rounded-xl animate-pulse" />
+        </div>
+        
+        <div className="flex overflow-x-auto pb-4 mb-6 gap-3">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} className="h-10 w-24 bg-slate-200 rounded-full animate-pulse" />
+          ))}
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} className="bg-white rounded-3xl border border-slate-100 overflow-hidden">
+              <div className="h-48 bg-slate-200 animate-pulse" />
+              <div className="p-6">
+                <div className="h-4 w-24 bg-slate-200 rounded mb-2 animate-pulse" />
+                <div className="h-6 w-32 bg-slate-200 rounded mb-3 animate-pulse" />
+                <div className="h-4 w-full bg-slate-200 rounded mb-2 animate-pulse" />
+                <div className="h-4 w-3/4 bg-slate-200 rounded mb-4 animate-pulse" />
+                <div className="h-10 w-full bg-slate-200 rounded-xl animate-pulse" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -250,7 +271,6 @@ const loadData = async () => {
           filteredEvents.map((event, i) => {
             const requestStatus = getRequestStatus(event.id);
             const showMessage = message?.eventId === event.id;
-            const displayDescription = event.mainDescription || event.description;
             
             return (
               <motion.div
@@ -271,7 +291,6 @@ const loadData = async () => {
                     alt={event.name} 
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out"
                     onError={(e) => {
-                      console.error('Image failed to load:', event.photoUrl);
                       (e.target as HTMLImageElement).src = 'https://placehold.co/600x400/e2e8f0/64748b?text=Image+Error';
                     }}
                   />
@@ -286,7 +305,7 @@ const loadData = async () => {
                     <h3 className="text-xl font-extrabold text-slate-900 leading-tight group-hover:text-orange-600 transition-colors line-clamp-2">
                       {event.name}
                     </h3>
-                    <p className="text-sm text-slate-500 mt-2 line-clamp-2">{displayDescription}</p>
+                    <p className="text-sm text-slate-500 mt-2 line-clamp-2">{event.description}</p>
                     
                     {/* Показываем превью смен */}
                     {event.shifts && event.shifts.length > 0 && (
@@ -345,7 +364,7 @@ const loadData = async () => {
         )}
       </div>
 
-      {/* Apply Modal - теперь показывает кастомные смены из события */}
+      {/* Apply Modal */}
       {showApplyModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowApplyModal(null)}>
           <motion.div 

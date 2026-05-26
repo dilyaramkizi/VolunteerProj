@@ -18,7 +18,9 @@ import {
   AlertCircle,
   X,
   ListChecks,
-  FileText
+  FileText,
+  Award,
+  Flag
 } from 'lucide-react';
 
 const API_BASE = (() => {
@@ -45,7 +47,7 @@ interface Event {
   photoUrl: string;
   coordinatorId: string;
   coordinatorName: string;
-  shifts?: Shift[]; // Добавлено поле для смен
+  shifts?: Shift[];
   createdAt: string;
 }
 
@@ -60,6 +62,9 @@ interface JoinRequest {
   status: string;
   requestedAt: string;
   formAnswers?: any;
+  attendanceMarked?: boolean;
+  checkInTime?: string;
+  checkOutTime?: string;
 }
 
 export default function CoordinatorEventsPage() {
@@ -72,6 +77,7 @@ export default function CoordinatorEventsPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; type: string } | null>(null);
+  const [completingEvent, setCompletingEvent] = useState<string | null>(null);
 
   useEffect(() => {
     const storedUser = localStorage.getItem('ngo_current_user');
@@ -91,29 +97,29 @@ export default function CoordinatorEventsPage() {
     }
   }, [userId]);
 
-    const loadEvents = async () => {
-      if (!userId) return;
+  const loadEvents = async () => {
+    if (!userId) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/items`);
+      const allEvents = await response.json();
       
-      setLoading(true);
-      try {
-        const response = await fetch(`${API_BASE}/api/items`);
-        const allEvents = await response.json();
-        
-        const myEvents = allEvents
+      const myEvents = allEvents
         .filter((e: Event) => e.coordinatorId === userId)
         .map((event: any) => ({
           ...event,
           shifts: event.shifts ? JSON.parse(event.shifts) : []
         }));
-        
-        setEvents(myEvents);
-      } catch (error) {
-        console.error('Failed to load events:', error);
-        showMessage('Failed to load events', 'error');
-      } finally {
-        setLoading(false);
-      }
-    };
+      
+      setEvents(myEvents);
+    } catch (error) {
+      console.error('Failed to load events:', error);
+      showMessage('Failed to load events', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadRequestsForEvent = async (eventId: string) => {
     if (!userId) return;
@@ -122,7 +128,21 @@ export default function CoordinatorEventsPage() {
       const response = await fetch(`${API_BASE}/api/coordinators/${userId}/join-requests?eventId=${eventId}`);
       if (response.ok) {
         const data = await response.json();
-        setRequests(data);
+        
+        const requestsWithAttendance = await Promise.all(data.map(async (req: JoinRequest) => {
+          try {
+            const joinRes = await fetch(`${API_BASE}/api/joins/${req.joinId}`);
+            if (joinRes.ok) {
+              const joinData = await joinRes.json();
+              return { ...req, ...joinData };
+            }
+          } catch (e) {
+            console.error('Failed to load attendance:', e);
+          }
+          return req;
+        }));
+        
+        setRequests(requestsWithAttendance);
       }
     } catch (error) {
       console.error('Failed to load requests:', error);
@@ -157,6 +177,67 @@ export default function CoordinatorEventsPage() {
       showMessage('Network error', 'error');
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleMarkAttendance = async (joinId: string, participantName: string) => {
+    setActionLoading(joinId);
+    try {
+      const response = await fetch(`${API_BASE}/api/joins/${joinId}/attendance`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinatorId: userId,
+          checkInTime: new Date().toISOString(),
+          attendanceMarked: true
+        }),
+      });
+      
+      if (response.ok) {
+        showMessage(`✅ Attendance marked for ${participantName}! Hours will be credited.`, 'success');
+        if (selectedEvent) {
+          await loadRequestsForEvent(selectedEvent.id);
+        }
+      } else {
+        const error = await response.json();
+        showMessage(error.message || 'Failed to mark attendance', 'error');
+      }
+    } catch (error) {
+      showMessage('Network error', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleCompleteEvent = async (eventId: string, eventName: string) => {
+    if (!confirm(`Mark "${eventName}" as completed? This will allow volunteers to receive hours for their participation.`)) return;
+    
+    setCompletingEvent(eventId);
+    try {
+      const approvedRequests = requests.filter(r => r.status === 'approved');
+      
+      for (const request of approvedRequests) {
+        await fetch(`${API_BASE}/api/joins/${request.joinId}/attendance`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            coordinatorId: userId,
+            checkInTime: new Date().toISOString(),
+            attendanceMarked: true
+          }),
+        });
+      }
+      
+      showMessage(`✅ Event "${eventName}" completed! Hours awarded to ${approvedRequests.length} volunteers.`, 'success');
+      
+      // Обновляем состояние, чтобы кнопка исчезла
+      await loadRequestsForEvent(eventId);
+      await loadEvents();
+      
+    } catch (error) {
+      showMessage('Failed to complete event', 'error');
+    } finally {
+      setCompletingEvent(null);
     }
   };
 
@@ -218,7 +299,27 @@ export default function CoordinatorEventsPage() {
     event.description.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Функция для подсчета статистики по сменам из requests
+  // Проверка, все ли смены прошли по времени
+  const isEventPast = (event: Event): boolean => {
+    if (!event.shifts || event.shifts.length === 0) return false;
+    const now = new Date();
+    return event.shifts.every(shift => {
+      const [year, month, day] = shift.date.split('-');
+      const [endHour, endMinute] = shift.endTime.split(':');
+      const shiftEnd = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(endHour), parseInt(endMinute));
+      return shiftEnd < now;
+    });
+  };
+
+  // Проверка, отмечено ли событие как завершенное (все approved участники получили часы)
+  const isEventCompleted = (event: Event): boolean => {
+    if (!event.shifts || event.shifts.length === 0) return false;
+    // Если есть approved участники и никто из них не получил часы -> не завершено
+    const approvedRequestsForEvent = requests.filter(r => r.status === 'approved');
+    if (approvedRequestsForEvent.length === 0) return isEventPast(event);
+    return approvedRequestsForEvent.every(r => r.attendanceMarked === true);
+  };
+
   const getShiftStats = (shifts: Shift[] | undefined) => {
     if (!shifts || shifts.length === 0) return [];
     
@@ -230,7 +331,8 @@ export default function CoordinatorEventsPage() {
       volunteersNeeded: shift.volunteersNeeded,
       approved: requests.filter(r => r.shift === shift.name && r.status === 'approved').length,
       pending: requests.filter(r => r.shift === shift.name && r.status === 'pending').length,
-      total: requests.filter(r => r.shift === shift.name).length
+      total: requests.filter(r => r.shift === shift.name).length,
+      attendanceMarked: requests.filter(r => r.shift === shift.name && r.attendanceMarked).length
     }));
   };
 
@@ -251,7 +353,6 @@ export default function CoordinatorEventsPage() {
 
   return (
     <div className="space-y-8">
-      {/* Message Toast */}
       <AnimatePresence>
         {message && (
           <motion.div 
@@ -329,99 +430,120 @@ export default function CoordinatorEventsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-          {filteredEvents.map((event, index) => (
-            <motion.div
-              key={event.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05, duration: 0.4 }}
-              className="group bg-white rounded-2xl border border-slate-100 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col"
-            >
-              {/* Image */}
-              <div className="relative h-64 overflow-hidden bg-slate-100">
-                <img 
-                  src={getImageUrl(event.photoUrl)} 
-                  alt={event.name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://placehold.co/800x500/e2e8f0/64748b?text=Event';
-                  }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                <div className="absolute top-3 right-3">
-                  <span className="px-2 py-1 rounded-lg bg-white/90 backdrop-blur-sm text-xs font-bold text-slate-700">
-                    {event.region}
-                  </span>
-                </div>
-              </div>
-
-              {/* Content */}
-              <div className="p-5 flex-1 flex flex-col">
-                <h3 className="text-xl font-extrabold text-slate-900 line-clamp-1 mb-2">
-                  {event.name}
-                </h3>
-                
-                <p className="text-slate-600 text-sm line-clamp-2 mb-4">
-                  {event.description}
-                </p>
-
-                {/* Shifts preview */}
-                {event.shifts && event.shifts.length > 0 && (
-                  <div className="mb-4">
-                    <p className="text-xs font-semibold text-slate-500 mb-2">Available Shifts:</p>
-                    <div className="flex flex-wrap gap-2">
-                      {event.shifts.slice(0, 2).map((shift) => (
-                        <span key={shift.id} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded">
-                          {shift.name}
-                        </span>
-                      ))}
-                      {event.shifts.length > 2 && (
-                        <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded">
-                          +{event.shifts.length - 2} more
-                        </span>
-                      )}
-                    </div>
+          {filteredEvents.map((event, index) => {
+            const isPast = isEventPast(event);
+            const isCompleted = isEventCompleted(event);
+            
+            return (
+              <motion.div
+                key={event.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05, duration: 0.4 }}
+                className={`group bg-white rounded-2xl border overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col cursor-pointer ${
+                  isCompleted ? 'border-emerald-200 bg-emerald-50/30' : isPast ? 'border-slate-200 opacity-75' : 'border-slate-100'
+                }`}
+                onClick={() => handleViewDetails(event)}
+              >
+                {/* Image */}
+                <div className="relative h-48 overflow-hidden bg-slate-100">
+                  <img 
+                    src={getImageUrl(event.photoUrl)} 
+                    alt={event.name}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = 'https://placehold.co/800x500/e2e8f0/64748b?text=Event';
+                    }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  <div className="absolute top-3 right-3">
+                    <span className="px-2 py-1 rounded-lg bg-white/90 backdrop-blur-sm text-xs font-bold text-slate-700">
+                      {event.region}
+                    </span>
                   </div>
-                )}
-
-                <div className="flex items-center gap-3 text-xs text-slate-400 mb-4">
-                  <span className="flex items-center gap-1">
-                    <Calendar size={12} />
-                    {new Date(event.createdAt).toLocaleDateString()}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Clock size={12} />
-                    {event.shifts?.length || 0} shifts
-                  </span>
+                  {isCompleted && (
+                    <div className="absolute bottom-3 left-3">
+                      <span className="px-2 py-1 rounded-lg bg-emerald-600/90 backdrop-blur-sm text-white text-xs font-bold flex items-center gap-1">
+                        <Award size={12} /> Completed
+                      </span>
+                    </div>
+                  )}
+                  {isPast && !isCompleted && (
+                    <div className="absolute bottom-3 left-3">
+                      <span className="px-2 py-1 rounded-lg bg-slate-900/80 backdrop-blur-sm text-white text-xs font-bold flex items-center gap-1">
+                        <Flag size={12} /> Past
+                      </span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Action Buttons */}
-                <div className="flex gap-2 mt-auto pt-2">
-                  <button
-                    onClick={() => handleViewDetails(event)}
-                    className="flex-1 py-2.5 rounded-xl bg-orange-50 text-orange-700 font-semibold text-sm hover:bg-orange-600 hover:text-white transition-all duration-200 flex items-center justify-center gap-1"
-                  >
-                    <Eye size={16} />
-                    View Details
-                  </button>
-                  <button
-                    onClick={() => handleExportCSV(event.id, event.name)}
-                    className="py-2.5 px-3 rounded-xl bg-slate-50 text-slate-600 font-semibold text-sm hover:bg-emerald-50 hover:text-emerald-600 transition-all duration-200"
-                    title="Export CSV"
-                  >
-                    <Download size={16} />
-                  </button>
-                  <button
-                    onClick={() => handleDeleteEvent(event.id)}
-                    className="py-2.5 px-3 rounded-xl bg-slate-50 text-slate-600 font-semibold text-sm hover:bg-red-50 hover:text-red-600 transition-all duration-200"
-                    title="Delete Event"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                {/* Content */}
+                <div className={`p-5 flex-1 flex flex-col ${isCompleted ? 'bg-emerald-50/20' : isPast ? 'bg-slate-50' : 'bg-white'}`}>
+                  <h3 className="text-xl font-extrabold text-slate-900 line-clamp-1 mb-2">
+                    {event.name}
+                  </h3>
+                  
+                  <p className="text-slate-600 text-sm line-clamp-2 mb-4">
+                    {event.description}
+                  </p>
+
+                  {event.shifts && event.shifts.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold text-slate-500 mb-2">Shifts:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {event.shifts.slice(0, 2).map((shift) => (
+                          <span key={shift.id} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded">
+                            {shift.name}
+                          </span>
+                        ))}
+                        {event.shifts.length > 2 && (
+                          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded">
+                            +{event.shifts.length - 2} more
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3 text-xs text-slate-400 mb-4">
+                    <span className="flex items-center gap-1">
+                      <Calendar size={12} />
+                      {new Date(event.createdAt).toLocaleDateString()}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Clock size={12} />
+                      {event.shifts?.length || 0} shifts
+                    </span>
+                  </div>
+
+                  {/* Action Buttons - останавливаем всплытие, чтобы не открывать модалку при клике на кнопки */}
+                  <div className="flex gap-2 mt-auto pt-2" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => handleViewDetails(event)}
+                      className="flex-1 py-2.5 rounded-xl bg-orange-50 text-orange-700 font-semibold text-sm hover:bg-orange-600 hover:text-white transition-all duration-200 flex items-center justify-center gap-1"
+                    >
+                      <Eye size={16} />
+                      View Details
+                    </button>
+                    <button
+                      onClick={() => handleExportCSV(event.id, event.name)}
+                      className="py-2.5 px-3 rounded-xl bg-slate-50 text-slate-600 font-semibold text-sm hover:bg-emerald-50 hover:text-emerald-600 transition-all duration-200"
+                      title="Export CSV"
+                    >
+                      <Download size={16} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteEvent(event.id)}
+                      className="py-2.5 px-3 rounded-xl bg-slate-50 text-slate-600 font-semibold text-sm hover:bg-red-50 hover:text-red-600 transition-all duration-200"
+                      title="Delete Event"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            );
+          })}
         </div>
       )}
 
@@ -436,7 +558,7 @@ export default function CoordinatorEventsPage() {
               className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-xl"
               onClick={e => e.stopPropagation()}
             >
-              {/* Modal Header with Image */}
+              {/* Modal Header */}
               <div className="relative h-64 overflow-hidden rounded-t-3xl">
                 <img 
                   src={getImageUrl(selectedEvent.photoUrl)} 
@@ -458,14 +580,13 @@ export default function CoordinatorEventsPage() {
                   <div className="flex items-center gap-4 text-sm opacity-90">
                     <span className="flex items-center gap-1"><MapPin size={14} /> {selectedEvent.region}</span>
                     <span className="flex items-center gap-1"><Calendar size={14} /> Created {new Date(selectedEvent.createdAt).toLocaleDateString()}</span>
-                    <span className="flex items-center gap-1"><Users size={14} /> By {selectedEvent.coordinatorName}</span>
                   </div>
                 </div>
               </div>
 
               {/* Modal Content */}
               <div className="p-6 space-y-6">
-                {/* Description Section */}
+                {/* Description */}
                 <div>
                   <h3 className="text-xl font-bold text-slate-900 mb-3 flex items-center gap-2">
                     <FileText size={20} className="text-orange-600" />
@@ -476,7 +597,35 @@ export default function CoordinatorEventsPage() {
                   </p>
                 </div>
 
-                {/* Shifts Section - REAL DATA FROM CREATION */}
+                {/* Complete Event Button - появляется только если событие прошло и еще не завершено */}
+                {isEventPast(selectedEvent) && !isEventCompleted(selectedEvent) && (
+                  <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+                    <div className="flex items-center justify-between flex-wrap gap-4">
+                      <div>
+                        <h4 className="font-bold text-blue-900 flex items-center gap-2">
+                          <Award size={18} />
+                          Mark Event as Completed
+                        </h4>
+                        <p className="text-sm text-blue-700 mt-1">
+                          After the event ends, mark it as completed to award hours to volunteers.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleCompleteEvent(selectedEvent.id, selectedEvent.name)}
+                        disabled={completingEvent === selectedEvent.id}
+                        className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+                      >
+                        {completingEvent === selectedEvent.id ? (
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        ) : (
+                          'Complete Event'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Shifts Section */}
                 <div>
                   <h3 className="text-xl font-bold text-slate-900 mb-4 flex items-center gap-2">
                     <Clock size={20} className="text-orange-600" />
@@ -514,12 +663,11 @@ export default function CoordinatorEventsPage() {
                               <div className="space-y-1 text-sm">
                                 <p className="text-emerald-600">✅ Approved: {shiftStat.approved}</p>
                                 <p className="text-amber-600">⏳ Pending: {shiftStat.pending}</p>
-                                <p className="text-slate-500">📋 Total applied: {shiftStat.total}</p>
+                                <p className="text-emerald-500">🏆 Attended: {shiftStat.attendanceMarked}</p>
                               </div>
                             </div>
                           </div>
                           
-                          {/* Progress bar for volunteers */}
                           <div className="mt-3">
                             <div className="flex justify-between text-xs text-slate-500 mb-1">
                               <span>Fill rate</span>
@@ -546,19 +694,12 @@ export default function CoordinatorEventsPage() {
                       Volunteer Applications
                       <span className="text-sm font-normal text-slate-500">({stats.totalRequests} total)</span>
                     </h3>
-                    <button
-                      onClick={() => handleExportCSV(selectedEvent.id, selectedEvent.name)}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 text-sm font-semibold hover:bg-emerald-100 transition-colors"
-                    >
-                      <Download size={14} /> Export All
-                    </button>
                   </div>
 
                   {requests.length === 0 ? (
                     <div className="text-center py-8 bg-slate-50 rounded-2xl">
                       <Users size={40} className="text-slate-300 mx-auto mb-2" />
                       <p className="text-slate-500">No applications yet</p>
-                      <p className="text-sm text-slate-400">Volunteers will appear here when they apply.</p>
                     </div>
                   ) : (
                     <div className="space-y-3 max-h-96 overflow-y-auto">
@@ -572,25 +713,31 @@ export default function CoordinatorEventsPage() {
                                 <span className="text-xs text-slate-400 bg-white px-2 py-0.5 rounded">
                                   {request.shift} shift
                                 </span>
+                                {request.attendanceMarked && (
+                                  <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded flex items-center gap-1">
+                                    <Award size={10} /> Hours awarded
+                                  </span>
+                                )}
                               </div>
                               <p className="text-xs text-slate-500">
-                                Applied on {new Date(request.requestedAt).toLocaleDateString()} at {new Date(request.requestedAt).toLocaleTimeString()}
+                                Applied on {new Date(request.requestedAt).toLocaleDateString()}
                               </p>
-                              {request.formAnswers && Object.keys(request.formAnswers).length > 0 && (
-                                <details className="mt-2">
-                                  <summary className="cursor-pointer text-xs text-orange-600 hover:text-orange-700 font-medium">
-                                    View form answers
-                                  </summary>
-                                  <div className="mt-2 p-3 bg-white rounded-lg border border-slate-100 text-sm space-y-1">
-                                    {Object.entries(request.formAnswers).map(([key, value]) => (
-                                      <p key={key} className="text-slate-600">
-                                        <strong className="text-slate-800">{key}:</strong> {String(value)}
-                                      </p>
-                                    ))}
-                                  </div>
-                                </details>
-                              )}
                             </div>
+                            
+                            {request.status === 'approved' && !request.attendanceMarked && isEventPast(selectedEvent) && !isEventCompleted(selectedEvent) && (
+                              <button
+                                onClick={() => handleMarkAttendance(request.joinId, request.participantName)}
+                                disabled={actionLoading === request.joinId}
+                                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center gap-1"
+                              >
+                                {actionLoading === request.joinId ? (
+                                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                  <Award size={14} />
+                                )}
+                                Award Hours
+                              </button>
+                            )}
                             
                             {request.status === 'pending' && (
                               <div className="flex gap-2">
@@ -629,7 +776,7 @@ export default function CoordinatorEventsPage() {
                     className="flex-1 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2"
                   >
                     <Download size={18} />
-                    Export Volunteers CSV
+                    Export CSV
                   </button>
                   <button
                     onClick={() => handleDeleteEvent(selectedEvent.id)}

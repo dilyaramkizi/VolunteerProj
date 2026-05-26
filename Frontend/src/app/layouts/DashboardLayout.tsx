@@ -14,12 +14,16 @@ import {
   X,
   Briefcase,
   Users,
-  PlusCircle
+  PlusCircle,
+  MessageCircle  // ← добавить иконку для групп
 } from 'lucide-react';
 
-const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE ??
-  (window.location.hostname === 'localhost' ? 'http://localhost:4000' : '');
+const API_BASE = (() => {
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    return 'http://localhost:4000';
+  }
+  return '';
+})();
 
 interface User {
   id: string;
@@ -56,6 +60,7 @@ export default function DashboardLayout() {
         ...baseNav,
         { name: 'Opportunities', href: '/dashboard/opportunities', icon: <Briefcase size={20} /> },
         { name: 'My Schedule', href: '/dashboard/schedule', icon: <Calendar size={20} /> },
+        { name: 'Groups', href: '/dashboard/groups', icon: <MessageCircle size={20} /> }, // ← ДОБАВЛЕНО
         { name: 'Profile', href: '/dashboard/profile', icon: <UserCircle size={20} /> },
       ];
     } else if (user?.role === 'Coordinator') {

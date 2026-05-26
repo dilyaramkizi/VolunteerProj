@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'motion/react';
+import { useNavigate } from 'react-router';
 import { Calendar, MapPin, Clock, Edit, FileText, CheckCircle2, AlertCircle, ChevronDown, X } from 'lucide-react';
 
 const API_BASE = (() => {
@@ -10,6 +11,23 @@ const API_BASE = (() => {
 })();
 
 const SHIFT_OPTIONS = ['Morning', 'Afternoon', 'Night'];
+
+interface Shift {
+  id: string;
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  volunteersNeeded: number;
+}
+
+interface Event {
+  id: string;
+  name: string;
+  description: string;
+  region: string;
+  shifts?: Shift[];
+}
 
 interface JoinRequest {
   id: string;
@@ -24,8 +42,10 @@ interface JoinRequest {
 }
 
 export default function SchedulePage() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'Upcoming' | 'Past' | 'Pending'>('Upcoming');
   const [joins, setJoins] = useState<JoinRequest[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedShift, setSelectedShift] = useState<Record<string, string>>({});
   const [showUpdateModal, setShowUpdateModal] = useState<JoinRequest | null>(null);
@@ -37,33 +57,125 @@ export default function SchedulePage() {
     if (storedUser) {
       const user = JSON.parse(storedUser);
       setUserId(user.id);
+    } else {
+      navigate('/login');
     }
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     if (userId) {
-      loadJoins();
+      loadData();
     }
   }, [userId]);
 
-  const loadJoins = async () => {
+  const loadData = useCallback(async () => {
     if (!userId) return;
     
+    setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/participants/${userId}/joins`);
-      if (response.ok) {
-        const data = await response.json();
-        setJoins(data);
-      }
+      // 🚀 ПАРАЛЛЕЛЬНЫЕ запросы
+      const [joinsRes, eventsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/participants/${userId}/joins`),
+        fetch(`${API_BASE}/api/items`)
+      ]);
+      
+      // Параллельный парсинг JSON
+      const [joinsData, eventsData] = await Promise.all([
+        joinsRes.json(),
+        eventsRes.json()
+      ]);
+      
+      // Parse shifts from events
+      const parsedEvents = eventsData.map((event: any) => ({
+        ...event,
+        shifts: event.shifts ? (typeof event.shifts === 'string' ? JSON.parse(event.shifts) : event.shifts) : []
+      }));
+      
+      setEvents(parsedEvents);
+      setJoins(joinsData);
+      
     } catch (error) {
-      console.error('Failed to load joins:', error);
+      console.error('Failed to load data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId]);
 
-  const handleUpdateShift = async (joinId: string, newShift: string) => {
-    // Find the original join to get eventId
+  const getShiftDetails = useCallback((eventId: string, shiftName: string): Shift | null => {
+    const event = events.find(e => e.id === eventId);
+    if (!event || !event.shifts) return null;
+    return event.shifts.find(s => s.name === shiftName) || null;
+  }, [events]);
+
+  const getShiftDate = useCallback((eventId: string, shiftName: string): Date | null => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return null;
+    return new Date(shift.date);
+  }, [getShiftDetails]);
+
+  const getShiftStartTime = useCallback((eventId: string, shiftName: string): string | null => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return null;
+    return shift.startTime;
+  }, [getShiftDetails]);
+
+  const getShiftEndTime = useCallback((eventId: string, shiftName: string): string | null => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return null;
+    return shift.endTime;
+  }, [getShiftDetails]);
+
+  // Функция для проверки, прошла ли смена уже (с учетом времени окончания)
+  const isUpcomingShift = useCallback((eventId: string, shiftName: string): boolean => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return false;
+    
+    // Создаем дату и время ОКОНЧАНИЯ смены
+    const [year, month, day] = shift.date.split('-');
+    const [endHour, endMinute] = shift.endTime.split(':');
+    const shiftEndDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(endHour), parseInt(endMinute));
+    
+    const now = new Date();
+    
+    // Смена считается предстоящей, если время окончания еще не наступило
+    return shiftEndDateTime > now;
+  }, [getShiftDetails]);
+
+  // Функция для расчета оставшихся дней (до начала смены, для отображения)
+  const getDaysLeft = useCallback((eventId: string, shiftName: string): number | null => {
+    const shift = getShiftDetails(eventId, shiftName);
+    if (!shift) return null;
+    
+    const [year, month, day] = shift.date.split('-');
+    const [startHour, startMinute] = shift.startTime.split(':');
+    const shiftStartDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(startHour), parseInt(startMinute));
+    
+    const now = new Date();
+    const diffTime = shiftStartDateTime.getTime() - now.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    return diffDays;
+  }, [getShiftDetails]);
+
+  const getFilteredJoins = useCallback(() => {
+    switch (activeTab) {
+      case 'Pending':
+        return joins.filter(j => j.status === 'pending');
+      case 'Past':
+        return joins.filter(j => {
+          if (j.status !== 'approved') return false;
+          return !isUpcomingShift(j.eventId, j.shift); // ← прошлые (время окончания уже прошло)
+        });
+      case 'Upcoming':
+      default:
+        return joins.filter(j => {
+          if (j.status !== 'approved') return false;
+          return isUpcomingShift(j.eventId, j.shift); // ← предстоящие (время окончания еще не наступило)
+        });
+    }
+  }, [activeTab, joins, isUpcomingShift]);
+
+  const handleUpdateShift = useCallback(async (joinId: string, newShift: string) => {
     const join = joins.find(j => j.id === joinId);
     if (!join) return;
 
@@ -78,7 +190,7 @@ export default function SchedulePage() {
       
       if (response.ok) {
         setMessage({ text: result.message || 'Shift updated successfully!', type: 'success', id: joinId });
-        loadJoins();
+        loadData();
         setShowUpdateModal(null);
       } else {
         setMessage({ text: result.message || 'Failed to update shift', type: 'error', id: joinId });
@@ -88,30 +200,7 @@ export default function SchedulePage() {
     } finally {
       setTimeout(() => setMessage(null), 3000);
     }
-  };
-
-  // Filter joins based on active tab
-  const getFilteredJoins = () => {
-    const now = new Date();
-    
-    switch (activeTab) {
-      case 'Pending':
-        return joins.filter(j => j.status === 'pending');
-      case 'Past':
-        return joins.filter(j => {
-          if (j.status !== 'approved') return false;
-          const requestedDate = new Date(j.requestedAt);
-          return requestedDate < now;
-        });
-      case 'Upcoming':
-      default:
-        return joins.filter(j => {
-          if (j.status !== 'approved') return false;
-          const requestedDate = new Date(j.requestedAt);
-          return requestedDate >= now;
-        });
-    }
-  };
+  }, [joins, userId, loadData]);
 
   const filteredJoins = getFilteredJoins();
 
@@ -147,10 +236,73 @@ export default function SchedulePage() {
     });
   };
 
+  // Функция для расчета длительности (исправлена с учетом минут)
+  const getDurationFormatted = (startTime: string, endTime: string): string => {
+    const start = startTime.split(':').map(Number);
+    const end = endTime.split(':').map(Number);
+    
+    let startMinutes = start[0] * 60 + (start[1] || 0);
+    let endMinutes = end[0] * 60 + (end[1] || 0);
+    
+    if (endMinutes < startMinutes) {
+      endMinutes += 24 * 60;
+    }
+    
+    const durationMinutes = endMinutes - startMinutes;
+    const hours = Math.floor(durationMinutes / 60);
+    const minutes = durationMinutes % 60;
+    
+    if (minutes === 0) {
+      return `${hours} hour${hours !== 1 ? 's' : ''}`;
+    } else if (hours === 0) {
+      return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+    } else {
+      return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
+    }
+  };
+
+  // Skeleton Loader
   if (loading) {
     return (
-      <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600"></div>
+      <div className="space-y-8">
+        <div className="flex flex-col gap-6 md:flex-row md:items-end justify-between">
+          <div>
+            <div className="h-9 w-32 bg-slate-200 rounded-lg animate-pulse" />
+            <div className="h-6 w-80 bg-slate-200 rounded-lg mt-2 animate-pulse" />
+          </div>
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-10 w-24 bg-slate-200 rounded-lg animate-pulse mx-1" />
+            ))}
+          </div>
+        </div>
+        
+        <div className="space-y-6">
+          <div className="h-7 w-48 bg-slate-200 rounded animate-pulse" />
+          <div className="space-y-4">
+            {[1, 2].map(i => (
+              <div key={i} className="bg-white rounded-3xl p-6 md:p-8 border border-slate-100">
+                <div className="flex flex-col md:flex-row justify-between gap-8">
+                  <div className="flex-1 space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className="h-8 w-24 bg-slate-200 rounded animate-pulse" />
+                      <div className="h-4 w-32 bg-slate-200 rounded animate-pulse" />
+                    </div>
+                    <div className="h-7 w-48 bg-slate-200 rounded animate-pulse" />
+                    <div className="h-5 w-64 bg-slate-200 rounded animate-pulse" />
+                    <div className="flex gap-6">
+                      <div className="h-5 w-32 bg-slate-200 rounded animate-pulse" />
+                      <div className="h-5 w-32 bg-slate-200 rounded animate-pulse" />
+                    </div>
+                  </div>
+                  <div className="md:w-56">
+                    <div className="h-10 w-full bg-slate-200 rounded-xl animate-pulse" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -167,8 +319,8 @@ export default function SchedulePage() {
           {['Upcoming', 'Past', 'Pending'].map(tab => {
             let count = 0;
             if (tab === 'Pending') count = joins.filter(j => j.status === 'pending').length;
-            else if (tab === 'Upcoming') count = joins.filter(j => j.status === 'approved' && new Date(j.requestedAt) >= new Date()).length;
-            else count = joins.filter(j => j.status === 'approved' && new Date(j.requestedAt) < new Date()).length;
+            else if (tab === 'Upcoming') count = joins.filter(j => j.status === 'approved' && isUpcomingShift(j.eventId, j.shift)).length;
+            else count = joins.filter(j => j.status === 'approved' && !isUpcomingShift(j.eventId, j.shift)).length;
             
             return (
               <button 
@@ -216,6 +368,10 @@ export default function SchedulePage() {
             filteredJoins.map((join, i) => {
               const statusConfig = getStatusConfig(join.status);
               const showMessage = message?.id === join.id;
+              const daysLeft = getDaysLeft(join.eventId, join.shift);
+              const shiftDate = getShiftDate(join.eventId, join.shift);
+              const startTime = getShiftStartTime(join.eventId, join.shift);
+              const endTime = getShiftEndTime(join.eventId, join.shift);
               
               return (
                 <motion.div 
@@ -255,7 +411,37 @@ export default function SchedulePage() {
                           <MapPin size={16} className="text-slate-400" />
                           Region: {join.eventRegion}
                         </div>
+                        {join.status === 'approved' && shiftDate && (
+                          <div className="flex items-center gap-2">
+                            <Calendar size={16} className="text-slate-400" />
+                            Shift Date: <span className="font-bold text-slate-700">{shiftDate.toLocaleDateString()}</span>
+                            {daysLeft !== null && daysLeft >= 0 && (
+                              <span className={`ml-2 px-2 py-0.5 rounded text-xs font-semibold ${daysLeft === 0 ? 'bg-orange-100 text-orange-700' : daysLeft < 3 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                                {daysLeft === 0 ? 'Today!' : daysLeft === 1 ? 'Tomorrow' : `${daysLeft} days left`}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
+
+                      {/* Время смены - с исправленной длительностью */}
+                      {join.status === 'approved' && startTime && endTime && (
+                        <div className="mt-3 pt-3 border-t border-slate-100">
+                          <div className="flex flex-wrap items-center gap-4 text-sm">
+                            <div className="flex items-center gap-2">
+                              <Clock size={16} className="text-orange-500" />
+                              <span className="font-semibold text-slate-700">Shift Time:</span>
+                              <span className="text-slate-600">{startTime} - {endTime}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400">|</span>
+                              <span className="text-slate-500 text-xs">
+                                Duration: {getDurationFormatted(startTime, endTime)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     <div className="flex flex-col justify-end gap-3 md:w-56 shrink-0 border-t md:border-t-0 md:border-l border-slate-100 pt-6 md:pt-0 md:pl-8">

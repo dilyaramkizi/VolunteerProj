@@ -10,14 +10,16 @@ import SettingsPage from "./pages/SettingsPage";
 // Volunteer pages
 import OpportunitiesPage from "./pages/volunteer/OpportunitiesPage";
 import SchedulePage from "./pages/volunteer/SchedulePage";
+import VolunteerGroupsPage from "./pages/volunteer/VoluGroupsPage";
 
 // Coordinator pages
 import CreateEventPage from "./pages/coordinator/CreateEventPage";
 import CoordinatorEventsPage from "./pages/coordinator/EventsPage";
 import ManageGroupsPage from "./pages/coordinator/ManageGroupsPage";
+import CoordinatorParticipantsPage from "./pages/coordinator/ParticipantsPage";
+
 
 export const router = createBrowserRouter([
-  // Public routes
   {
     path: "/",
     Component: LandingPage,
@@ -31,7 +33,6 @@ export const router = createBrowserRouter([
     Component: RegisterPage,
   },
   
-  // Protected dashboard routes
   {
     path: "/dashboard",
     Component: DashboardLayout,
@@ -43,12 +44,13 @@ export const router = createBrowserRouter([
       { path: "schedule", Component: SchedulePage },
       { path: "create-event", Component: CreateEventPage },
       { path: "events", Component: CoordinatorEventsPage },
-      { path: "groups", Component: ManageGroupsPage },
+      { path: "manage-groups", Component: ManageGroupsPage },        // ← для координатора
+      { path: "groups", Component: VolunteerGroupsPage },           // ← для волонтера
+      { path: "participants", Component: CoordinatorParticipantsPage },
       { path: "*", element: <Navigate to="/dashboard" replace /> },
     ],
   },
   
-  // Catch-all for unknown routes
   {
     path: "*",
     element: <Navigate to="/" replace />,
