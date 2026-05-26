@@ -1,4 +1,5 @@
 import { createBrowserRouter, Navigate } from "react-router";
+import VerifyPage from './pages/VerifyPage';
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -24,6 +25,12 @@ export const router = createBrowserRouter([
     path: "/",
     Component: LandingPage,
   },
+
+  {
+  path: '/verify',
+  Component: VerifyPage,
+  },
+
   {
     path: "/login",
     Component: LoginPage,

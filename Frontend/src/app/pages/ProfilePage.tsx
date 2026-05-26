@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Link, useNavigate } from 'react-router';
+import QRCode from 'qrcode';
 import { 
   Clock, Trophy, MapPin, Edit3, CheckCircle2, X, AlertCircle, 
   Calendar, Users, Briefcase, TrendingUp, PlusCircle, Download, Award
@@ -409,6 +410,21 @@ export default function ProfilePage() {
     pdf.setFont('helvetica', 'normal');
     pdf.setTextColor(154, 52, 18);
     pdf.text('Thank you for making a difference · www.volukz.org · Kazakhstan Volunteer Platform', cx, H - 10, { align: 'center' });
+
+    // Генерация QR кода
+    const qrData = `http://localhost:5173/verify?name=${encodeURIComponent(certificateName)}&hours=${totalHoursValue.toFixed(1)}&events=${completedHistory.length}&date=${new Date().toISOString().split('T')[0]}&uid=${user?.id}-${Date.now()}`;
+    const qrDataUrl = await QRCode.toDataURL(qrData, { 
+      width: 80, 
+      margin: 1,
+      color: { dark: '#1e1e2e', light: '#fff7ed' }
+    });
+
+    // Добавляем QR в PDF
+    pdf.addImage(qrDataUrl, 'PNG', W - 42, H - 42, 22, 22);
+    pdf.setFontSize(5);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(154, 52, 18);
+    pdf.text('SCAN TO VERIFY', W - 31, H - 18, { align: 'center' });
 
     pdf.save(`VoluKZ_Certificate_${certificateName.replace(/\s/g, '_')}.pdf`);
     showMessage('Certificate generated successfully! 🎉', 'success');
